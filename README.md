@@ -54,13 +54,6 @@ The bot reliably supports downloading from:
 - 🗃️ Database-backed cache and state handling
 - 📝 Logging and error handling
 
-### 🛠️ Admin and Management Features
-- 🧩 Full admin panel inside Telegram
-- 💳 User credit management via bot commands
-- ⏱️ Rate limiting and quota enforcement
-- 🔐 Credit-based download system
-- ⚙️ Administrative control without server access
-
 ### 🆕 Enhancements Added in This Project
 The following features were added and did not exist in the original upstream project:
 
