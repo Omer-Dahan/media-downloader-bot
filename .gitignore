@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+
+# Environments
+.env
+*.env
+
+# Cookies
+*cookies*.txt
+*youtube-cookies*.txt
+
+# Databases
+*.sqlite3
+*.db
+
+# Telegram sessions
+*.session
+*.session-journal
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# Temp
+downloads/
+temp/
