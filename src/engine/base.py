@@ -347,8 +347,8 @@ class BaseDownloader(ABC):
                 else:
                     user_display = str(self._from_user)
                 
-                # Send to archive with user info
-                archive_caption = f"📥 הורדה עבור: {user_display}\n🆔 {self._from_user}\n🔗 {self._url}"
+                # Send to archive with user info (no link per user request)
+                archive_caption = f"📥 הורדה עבור: {user_display}\n🆔 {self._from_user}"
                 
                 logging.info("Attempting to copy message %s to channel %s", msg_id, ARCHIVE_CHANNEL)
                 self._client.send_message(

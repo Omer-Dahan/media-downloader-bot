@@ -43,6 +43,7 @@ class User(Base):
     free = Column(Integer, default=FREE_DOWNLOAD)
     paid = Column(Integer, default=0)
     bandwidth_used = Column(BigInteger, default=0)  # Daily bandwidth used in bytes
+    total_bandwidth = Column(BigInteger, default=0)  # All-time bandwidth used in bytes
     is_blocked = Column(Integer, default=0)  # 0 = active, 1 = blocked
     config = Column(JSON)
 
@@ -249,7 +250,8 @@ def add_bandwidth_used(uid: int, size: int):
         user = session.query(User).filter(User.user_id == uid).first()
         if user:
             user.bandwidth_used += size
-            logging.info("User %s bandwidth usage: %s bytes", uid, user.bandwidth_used)
+            user.total_bandwidth = (user.total_bandwidth or 0) + size  # All-time tracking
+            logging.info("User %s bandwidth usage: %s bytes (total: %s)", uid, user.bandwidth_used, user.total_bandwidth)
 
 
 def credit_account(who, total_amount: int, quota: int, transaction, method="stripe"):
@@ -335,13 +337,15 @@ def get_download_stats():
         total_free = session.query(func.sum(User.free)).scalar() or 0
         total_paid = session.query(func.sum(User.paid)).scalar() or 0
         total_bandwidth = session.query(func.sum(User.bandwidth_used)).scalar() or 0
+        all_time_bandwidth = session.query(func.sum(User.total_bandwidth)).scalar() or 0
         
         return {
             'total_users': total_users,
             'paid_users': paid_users,
             'total_free_remaining': total_free,
             'total_paid': total_paid,
-            'total_bandwidth_used': total_bandwidth
+            'total_bandwidth_used': total_bandwidth,
+            'all_time_bandwidth': all_time_bandwidth
         }
 
 

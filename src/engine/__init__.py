@@ -12,6 +12,7 @@ from engine.pixeldrain import pixeldrain_download
 from engine.instagram import InstagramDownload
 from engine.krakenfiles import krakenfiles_download
 from engine.reddit import RedditDownload
+from engine.tiktok import TikTokDownload
 
 
 def youtube_entrance(client, bot_message, url):
@@ -56,12 +57,21 @@ def reddit_handler(client: Any, bot_message: Any, url: str) -> None:
     downloader.start()
 
 
+# --- Handler for TikTok ---
+def tiktok_handler(client: Any, bot_message: Any, url: str) -> None:
+    """A wrapper to handle the TikTokDownload class."""
+    downloader = TikTokDownload(client, bot_message, url)
+    downloader.start()
+
+
 DOWNLOADER_MAP: dict[str, Callable[[Any, Any, str], Any]] = {
     "pixeldrain.com": pixeldrain_download,
     "krakenfiles.com": krakenfiles_download,
     "instagram.com": instagram_handler,
     "reddit.com": reddit_handler,
     "redd.it": reddit_handler,
+    "tiktok.com": tiktok_handler,
+    "vt.tiktok.com": tiktok_handler,
 }
 
 def special_download_entrance(client: Any, bot_message: Any, url: str) -> Any:
