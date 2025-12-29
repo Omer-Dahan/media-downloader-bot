@@ -347,18 +347,26 @@ class BaseDownloader(ABC):
                 else:
                     user_display = str(self._from_user)
                 
-                # Send to archive with user info (no link per user request)
-                archive_caption = f"📥 הורדה עבור: {user_display}\n🆔 {self._from_user}"
-                
-                logging.info("Attempting to copy message %s to channel %s", msg_id, ARCHIVE_CHANNEL)
-                self._client.send_message(
-                    chat_id=ARCHIVE_CHANNEL,
-                    text=archive_caption,
+                # Get filename
+                filename = "Unknown"
+                if files and len(files) > 0:
+                    filename = Path(files[0]).name
+
+                # Create archive caption without link
+                archive_caption = (
+                    f"👤 משתמש: {user_display}\n"
+                    f"🆔 {self._from_user}\n"
+                    f"📁 קובץ: {filename}"
                 )
+                
+                logging.info("Attempting to copy message %s to channel %s with custom caption", msg_id, ARCHIVE_CHANNEL)
+                
+                # Copy message with new caption (overriding the original one with the link)
                 self._client.copy_message(
                     chat_id=ARCHIVE_CHANNEL,
                     from_chat_id=self._chat_id,
                     message_id=msg_id,
+                    caption=archive_caption
                 )
                 logging.info("Forwarded to archive channel: %s", ARCHIVE_CHANNEL)
             except Exception as e:

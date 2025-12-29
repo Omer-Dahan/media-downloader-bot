@@ -25,6 +25,7 @@ from pyrogram import Client, enums, filters, types
 from config import (
     APP_HASH,
     APP_ID,
+    ARCHIVE_CHANNEL,
     AUTHORIZED_USER,
     BOT_TOKEN,
     ENABLE_ARIA2,
@@ -71,6 +72,37 @@ def create_app(name: str, workers: int = 64) -> Client:
 
 
 app = create_app("main")
+
+
+def report_error_to_archive(client: Client, user: types.User, url: str, error: Exception | str):
+    if not ARCHIVE_CHANNEL:
+        return
+    
+    try:
+        user_display = str(user.id)
+        if user:
+            name = user.first_name or ""
+            if user.username:
+                name = f"{name} @{user.username}".strip()
+            if name:
+                user_display = name
+        
+        caption = (
+            f"❌ **דיווח שגיאה**\n"
+            f"👤 משתמש: {user_display}\n"
+            f"🆔 {user.id}\n"
+            f"🔗 קישור: {url}\n"
+            f"⚠️ שגיאה: {str(error)}"
+        )
+        
+        client.send_message(
+            chat_id=ARCHIVE_CHANNEL,
+            text=caption,
+            disable_web_page_preview=True
+        )
+    except Exception as e:
+        logging.error("Failed to report error to archive channel: %s", e)
+
 
 # Register admin panel handlers
 @app.on_message(filters.command(["adminpanel"]))
@@ -364,6 +396,7 @@ def direct_download(client: Client, message: types.Message):
     try:
         direct_entrance(client, bot_msg, url)
     except ValueError as e:
+        report_error_to_archive(client, message.from_user, url, e)
         message.reply_text(e.__str__(), quote=True)
         bot_msg.delete()
         return
@@ -384,6 +417,7 @@ def spdl_handler(client: Client, message: types.Message):
     try:
         special_download_entrance(client, bot_msg, url)
     except ValueError as e:
+        report_error_to_archive(client, message.from_user, url, e)
         message.reply_text(e.__str__(), quote=True)
         bot_msg.delete()
         return
@@ -405,6 +439,7 @@ def ytdl_handler(client: Client, message: types.Message):
     try:
         youtube_entrance(client, bot_msg, url)
     except ValueError as e:
+        report_error_to_archive(client, message.from_user, url, e)
         message.reply_text(e.__str__(), quote=True)
         bot_msg.delete()
         return
@@ -506,6 +541,7 @@ def download_handler(client: Client, message: types.Message):
             # No special handler found, fall back to yt-dlp
             youtube_entrance(client, bot_msg, url)
     except pyrogram.errors.Flood as e:
+        report_error_to_archive(client, message.from_user, url, e)
         f = BytesIO()
         f.write(str(e).encode())
         f.write(b"\xd7\x94\xd7\x91\xd7\xa7\xd7\xa9\xd7\x94 \xd7\xa9\xd7\x9c\xd7\x9a \xd7\x91\xd7\x98\xd7\x99\xd7\xa4\xd7\x95\xd7\x9c. \xd7\x90\xd7\xa0\xd7\x90 \xd7\x94\xd7\x9e\xd7\xaa\xd7\x9f \xd7\x91\xd7\xa1\xd7\x91\xd7\x9c\xd7\xa0\xd7\x95\xd7\xaa.")
@@ -515,8 +551,10 @@ def download_handler(client: Client, message: types.Message):
         client.send_message(OWNER, f"המתנת הצפה! 🙁 {e} שניות....")
         time.sleep(e.value)
     except ValueError as e:
+        report_error_to_archive(client, message.from_user, url, e)
         message.reply_text(e.__str__(), quote=True)
     except Exception as e:
+        report_error_to_archive(client, message.from_user, url, e)
         logging.error("Download failed", exc_info=True)
         message.reply_text(f"❌ ההורדה נכשלה: {e}", quote=True)
 
