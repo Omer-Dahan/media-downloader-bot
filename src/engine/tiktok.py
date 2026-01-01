@@ -11,6 +11,7 @@ from typing import Optional
 
 import yt_dlp
 
+from config import ARCHIVE_CHANNEL
 from engine.base import BaseDownloader
 
 
@@ -146,13 +147,42 @@ class TikTokDownload(BaseDownloader):
             self._format = "video"
             return files
         
-        # Both failed
+        # Both failed - report to archive channel and show error to user
+        error_msg = "הורדה מ-TikTok נכשלה!"
         self._bot_msg.edit_text(
-            "❌ הורדה מ-TikTok נכשלה!\n\n"
-            "TikTok חוסם הורדות לפעמים. נסה שוב מאוחר יותר.\n"
-            "💡 טיפ: אם הבעיה חוזרת, נסה לשלוח קישור אחר לאותו סרטון."
+            f"❌ {error_msg}\n\n"
+            "TikTok חוסם הורדות לפעמים. נסה שוב מאוחר יותר."
         )
-        return []
+        
+        # Send error report to archive channel
+        if ARCHIVE_CHANNEL:
+            try:
+                from database.model import get_user_stats
+                user_info = get_user_stats(self._from_user)
+                if user_info:
+                    name = user_info.get('first_name') or ""
+                    if user_info.get('username'):
+                        name = f"{name} @{user_info['username']}".strip()
+                    user_display = name if name else str(self._from_user)
+                else:
+                    user_display = str(self._from_user)
+                
+                report = (
+                    f"❌ **דיווח שגיאה**\n"
+                    f"👤 משתמש: {user_display}\n"
+                    f"🆔 {self._from_user}\n"
+                    f"🔗 קישור: {self._url}\n"
+                    f"⚠️ שגיאה: {error_msg}"
+                )
+                self._client.send_message(
+                    chat_id=ARCHIVE_CHANNEL, 
+                    text=report,
+                    disable_web_page_preview=True
+                )
+            except Exception as e:
+                logging.warning("Failed to send error to archive: %s", e)
+        
+        return []  # Return empty, error already reported
 
     def _start(self):
         """Start download and upload process."""

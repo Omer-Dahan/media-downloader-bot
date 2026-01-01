@@ -49,6 +49,7 @@ from database.model import (
     set_user_settings,
 )
 from engine import direct_entrance, youtube_entrance, youtube_entrance_with_quality, get_youtube_video_info, special_download_entrance
+from engine.generic import check_and_send_update_notification
 from utils import extract_url_and_name, sizeof_fmt, timeof_fmt, is_youtube
 from admin import admin_panel_command, admin_callback_handler, admin_text_handler, _admin_state
 
@@ -537,9 +538,11 @@ def download_handler(client: Client, message: types.Message):
         # Try special download handlers first (Reddit, Instagram, PixelDrain, etc.)
         try:
             special_download_entrance(client, bot_msg, url)
-        except ValueError:
+        except ValueError as inner_e:
             # No special handler found, fall back to yt-dlp
-            youtube_entrance(client, bot_msg, url)
+            if "לא נמצא מוריד" in str(inner_e):
+                youtube_entrance(client, bot_msg, url)
+            # Other ValueErrors are handled by the downloader itself
     except pyrogram.errors.Flood as e:
         report_error_to_archive(client, message.from_user, url, e)
         f = BytesIO()
@@ -683,4 +686,9 @@ if __name__ == "__main__":
 By @BennyThink, VIP Mode: {ENABLE_VIP} 
     """
     print(banner)
+    
+    # Check if bot was restarted after yt-dlp update and send notification
+    with app:
+        check_and_send_update_notification(app)
+    
     app.run()

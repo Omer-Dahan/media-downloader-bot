@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # coding: utf-8
-
 # ytdlbot - generic.py
 
 import logging
@@ -11,7 +10,7 @@ from pathlib import Path
 
 import yt_dlp
 
-from config import AUDIO_FORMAT
+from config import AUDIO_FORMAT, ARCHIVE_CHANNEL
 from utils import is_youtube
 from database.model import get_format_settings, get_quality_settings
 from engine.base import BaseDownloader
@@ -23,12 +22,128 @@ COOKIES_PATH = _SCRIPT_DIR / "youtube-cookies.txt"
 # Track if we've already tried updating yt-dlp in this session
 _ytdlp_update_attempted = False
 
+# File to store update info for notification after restart
+UPDATE_FLAG_FILE = _SCRIPT_DIR / ".ytdlp_updated"
+
+
+def get_ytdlp_version() -> str:
+    """Get the current installed version of yt-dlp."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "show", "yt-dlp"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        for line in result.stdout.split("\n"):
+            if line.startswith("Version:"):
+                return line.split(":")[1].strip()
+    except Exception as e:
+        logging.error("Failed to get yt-dlp version: %s", e)
+    return "unknown"
+
+
+def check_ytdlp_update_available() -> tuple[bool, str, str]:
+    """Check if a yt-dlp update is available.
+    Returns (update_available, current_version, latest_version)
+    """
+    current_version = get_ytdlp_version()
+    
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "index", "versions", "yt-dlp"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        # Parse output to get latest version
+        output = result.stdout + result.stderr
+        # Look for "Available versions:" or version numbers
+        import re
+        versions = re.findall(r"(\d+\.\d+\.\d+)", output)
+        if versions:
+            latest_version = versions[0]  # First match is usually the latest
+            return current_version != latest_version, current_version, latest_version
+    except Exception as e:
+        logging.error("Failed to check for yt-dlp updates: %s", e)
+    
+    return False, current_version, "unknown"
+
+
+def save_update_info(old_version: str, new_version: str):
+    """Save update info to file for notification after restart."""
+    try:
+        import json
+        from datetime import datetime
+        update_info = {
+            "old_version": old_version,
+            "new_version": new_version,
+            "timestamp": datetime.now().isoformat()
+        }
+        UPDATE_FLAG_FILE.write_text(json.dumps(update_info, ensure_ascii=False))
+        logging.info("Saved update info to %s", UPDATE_FLAG_FILE)
+    except Exception as e:
+        logging.error("Failed to save update info: %s", e)
+
+
+def check_and_send_update_notification(client):
+    """Check if bot was restarted after update and send notification.
+    
+    Call this from main.py after bot starts.
+    """
+    if not UPDATE_FLAG_FILE.exists():
+        return
+    
+    try:
+        import json
+        update_info = json.loads(UPDATE_FLAG_FILE.read_text())
+        UPDATE_FLAG_FILE.unlink()  # Delete the flag file
+        
+        old_ver = update_info.get("old_version", "unknown")
+        new_ver = update_info.get("new_version", "unknown")
+        timestamp = update_info.get("timestamp", "unknown")
+        
+        message = (
+            f"🔄 **עדכון yt-dlp הושלם!**\n\n"
+            f"📦 גרסה קודמת: `{old_ver}`\n"
+            f"📦 גרסה חדשה: `{new_ver}`\n"
+            f"⏰ זמן עדכון: {timestamp}\n\n"
+            f"✅ הבוט הופעל מחדש בהצלחה!"
+        )
+        
+        if ARCHIVE_CHANNEL:
+            client.send_message(chat_id=ARCHIVE_CHANNEL, text=message)
+            logging.info("Sent update notification to archive channel")
+        else:
+            logging.info("No archive channel configured, skipping notification")
+            
+    except Exception as e:
+        logging.error("Failed to send update notification: %s", e)
+        # Clean up flag file even if notification fails
+        try:
+            UPDATE_FLAG_FILE.unlink()
+        except:
+            pass
+
+
+def restart_bot():
+    """Restart the bot process."""
+    logging.info("Restarting bot process...")
+    try:
+        # Use os.execv to replace the current process with a new one
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:
+        logging.error("Failed to restart bot: %s", e)
+        # Fallback: try to exit gracefully so supervisor/systemd can restart
+        logging.info("Attempting graceful exit for external restart...")
+        os._exit(1)
+
 
 def try_update_ytdlp() -> bool:
     """Try to update yt-dlp to the latest version.
-    
-    Returns True if update was successful, False otherwise.
+    If an update is available, installs it and restarts the bot.
     Only attempts update once per session.
+    Returns True if update was installed (bot will restart), False otherwise.
     """
     global _ytdlp_update_attempted
     
@@ -37,7 +152,17 @@ def try_update_ytdlp() -> bool:
         return False
     
     _ytdlp_update_attempted = True
-    logging.info("Attempting to auto-update yt-dlp...")
+    
+    # First check if update is available
+    update_available, current_ver, latest_ver = check_ytdlp_update_available()
+    logging.info("yt-dlp version check: current=%s, latest=%s, update_available=%s", 
+                 current_ver, latest_ver, update_available)
+    
+    if not update_available:
+        logging.info("yt-dlp is already up to date (version %s)", current_ver)
+        return False
+    
+    logging.info("yt-dlp update available: %s -> %s, installing...", current_ver, latest_ver)
     
     try:
         result = subprocess.run(
@@ -48,11 +173,20 @@ def try_update_ytdlp() -> bool:
         )
         
         if result.returncode == 0:
-            logging.info("yt-dlp updated successfully!")
-            # Reload yt_dlp module to use new version
-            import importlib
-            importlib.reload(yt_dlp)
-            return True
+            new_version = get_ytdlp_version()
+            logging.info("yt-dlp updated successfully! %s -> %s", current_ver, new_version)
+            
+            # Verify the update actually happened
+            if new_version != current_ver:
+                logging.info("Update verified, restarting bot to apply changes...")
+                # Save update info for notification after restart
+                save_update_info(current_ver, new_version)
+                restart_bot()
+                # If restart_bot returns (shouldn't happen with execv), return True
+                return True
+            else:
+                logging.warning("Version unchanged after update, no restart needed")
+                return False
         else:
             logging.error("yt-dlp update failed: %s", result.stderr)
             return False

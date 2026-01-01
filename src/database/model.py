@@ -320,6 +320,8 @@ def get_user_stats(uid: int):
         if user:
             return {
                 'user_id': user.user_id,
+                'first_name': user.first_name,
+                'username': user.username,
                 'free': user.free,
                 'paid': user.paid,
                 'bandwidth_used': user.bandwidth_used,
