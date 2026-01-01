@@ -687,8 +687,20 @@ By @BennyThink, VIP Mode: {ENABLE_VIP}
     """
     print(banner)
     
-    # Check if bot was restarted after yt-dlp update and send notification
-    with app:
-        check_and_send_update_notification(app)
+    # Check if bot was restarted after yt-dlp update and send notification on startup
+    @app.on_message(filters.command(["__startup_check__"]))
+    def _dummy_startup_handler(client, message):
+        pass  # Never actually called, just for registration
+    
+    # Use a thread to send the notification after a short delay
+    def send_update_notification_on_startup():
+        import time as t
+        t.sleep(3)  # Wait for bot to fully connect
+        try:
+            check_and_send_update_notification(app)
+        except Exception as e:
+            logging.error("Failed to send update notification: %s", e)
+    
+    threading.Thread(target=send_update_notification_on_startup, daemon=True).start()
     
     app.run()

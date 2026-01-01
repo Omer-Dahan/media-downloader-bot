@@ -128,20 +128,20 @@ class TikTokDownload(BaseDownloader):
     def _download(self, formats=None) -> list:
         """Download TikTok video, trying yt-dlp first then tiktokapipy."""
         # Store original URL for caption/display (user wants original link, not resolved redirect)
-        original_url = self._url
+        self._original_url = self._url
         
         # Resolve short URLs to full URLs for download only
-        download_url = resolve_tiktok_url(self._url)
+        self._resolved_url = resolve_tiktok_url(self._url)
         
         # Try yt-dlp first (usually more reliable and faster)
-        files = self._download_with_ytdlp_url(download_url)
+        files = self._download_with_ytdlp_url(self._resolved_url)
         
         if files:
             self._format = "video"
             return files
         
         # Fallback to tiktokapipy
-        files = self._download_with_tiktokapipy_url(download_url)
+        files = self._download_with_tiktokapipy_url(self._resolved_url)
         
         if files:
             self._format = "video"
@@ -171,7 +171,8 @@ class TikTokDownload(BaseDownloader):
                     f"❌ **דיווח שגיאה**\n"
                     f"👤 משתמש: {user_display}\n"
                     f"🆔 {self._from_user}\n"
-                    f"🔗 קישור: {self._url}\n"
+                    f"🔗 קישור ישיר: {self._original_url}\n"
+                    f"🔗 קישור מפורט: {self._resolved_url}\n"
                     f"⚠️ שגיאה: {error_msg}"
                 )
                 self._client.send_message(
@@ -184,8 +185,70 @@ class TikTokDownload(BaseDownloader):
         
         return []  # Return empty, error already reported
 
+    def _get_archive_caption(self, files: list) -> str:
+        """Create custom archive caption with both TikTok URLs."""
+        from pathlib import Path
+        from database.model import get_user_stats
+        
+        user_info = get_user_stats(self._from_user)
+        if user_info:
+            name = user_info.get('first_name') or ""
+            if user_info.get('username'):
+                name = f"{name} @{user_info['username']}".strip()
+            user_display = name if name else str(self._from_user)
+        else:
+            user_display = str(self._from_user)
+        
+        filename = "Unknown"
+        if files and len(files) > 0:
+            filename = Path(files[0]).name
+        
+        # Check if URLs are different (short vs resolved)
+        if self._original_url != self._resolved_url:
+            return (
+                f"👤 משתמש: {user_display}\n"
+                f"🆔 {self._from_user}\n"
+                f"📁 קובץ: {filename}\n"
+                f"🔗 קישור ישיר: {self._original_url}\n"
+                f"🔗 קישור מפורט: {self._resolved_url}"
+            )
+        else:
+            return (
+                f"👤 משתמש: {user_display}\n"
+                f"🆔 {self._from_user}\n"
+                f"📁 קובץ: {filename}\n"
+                f"🔗 קישור: {self._original_url}"
+            )
+
     def _start(self):
-        """Start download and upload process."""
+        """Start download and upload process with custom archive handling."""
         downloaded_files = self._download()
-        if downloaded_files:
-            self._upload(files=downloaded_files)
+        if not downloaded_files:
+            return
+        
+        # Upload to user
+        from pathlib import Path
+        import json
+        
+        files = [Path(f) for f in downloaded_files] if downloaded_files else list(Path(self._tempdir.name).glob("*"))
+        meta = self.get_metadata()
+        
+        success = self._upload(files=downloaded_files, meta=meta, skip_archive=True)
+        
+        # Custom archive handling for TikTok with both URLs
+        if ARCHIVE_CHANNEL and success:
+            try:
+                msg_id = getattr(success, 'id', None)
+                archive_caption = self._get_archive_caption(downloaded_files)
+                
+                logging.info("TikTok: Copying to archive with custom caption")
+                self._client.copy_message(
+                    chat_id=ARCHIVE_CHANNEL,
+                    from_chat_id=self._chat_id,
+                    message_id=msg_id,
+                    caption=archive_caption
+                )
+                logging.info("TikTok: Forwarded to archive channel")
+            except Exception as e:
+                logging.error("TikTok: Failed to forward to archive: %s", e)
+

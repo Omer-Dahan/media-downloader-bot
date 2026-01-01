@@ -1,3 +1,4 @@
+# Python 3.13.7
 tgcrypto>=1.2.5
 APScheduler>=3.11.0
 ffmpeg-python>=0.2.0
@@ -18,3 +19,4 @@ kurigram==2.2.15
 cryptography>=43.0.3
 yt-dlp[default,curl-cffi]==2025.11.12
 yt-dlp-ejs==0.3.1
+instaloader>=4.11

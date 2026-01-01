@@ -231,7 +231,7 @@ class BaseDownloader(ABC):
         caption = f"🔗 מקור:\n{self._url}\n📐 רזולוציה: {width}x{height}\n⏱️ אורך: {duration_str}\n⬇️ הקובץ מוכן לצפייה והורדה\nצפייה מהנה 👀✨"
         return dict(height=height, width=width, duration=duration, thumb=thumb, caption=caption)
 
-    def _upload(self, files=None, meta=None):
+    def _upload(self, files=None, meta=None, skip_archive=False):
         if files is None:
             files = list(Path(self._tempdir.name).glob("*"))
         if meta is None:
@@ -331,9 +331,9 @@ class BaseDownloader(ABC):
 
         self._redis.add_cache(video_key, mapping)
         
-        # Forward to archive channel if configured
-        logging.info("Archive channel check: ARCHIVE_CHANNEL=%s, success=%s", ARCHIVE_CHANNEL, type(success))
-        if ARCHIVE_CHANNEL and success:
+        # Forward to archive channel if configured (unless skip_archive is set)
+        logging.info("Archive channel check: ARCHIVE_CHANNEL=%s, success=%s, skip_archive=%s", ARCHIVE_CHANNEL, type(success), skip_archive)
+        if ARCHIVE_CHANNEL and success and not skip_archive:
             try:
                 msg_id = getattr(success, 'id', None)
                 

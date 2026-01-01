@@ -2,18 +2,32 @@
 # coding: utf-8
 
 # ytdlbot - instagram.py
+# Instagram downloader using yt-dlp with instaloader fallback
 
-import time
+import logging
 import pathlib
 import re
+from typing import Optional
 
-import filetype
-import requests
+import yt_dlp
+
+from config import ARCHIVE_CHANNEL, INSTAGRAM_SESSION_FILE, INSTAGRAM_COOKIES_FILE
 from engine.base import BaseDownloader
+
+# Try to import instaloader, but make it optional
+try:
+    import instaloader
+    INSTALOADER_AVAILABLE = True
+except ImportError:
+    INSTALOADER_AVAILABLE = False
+    logging.warning("instaloader not installed. Run: pip install instaloader")
 
 
 class InstagramDownload(BaseDownloader):
-    def extract_code(self):
+    """Downloader for Instagram content using yt-dlp with instaloader fallback."""
+
+    def extract_code(self) -> Optional[str]:
+        """Extract the media code from Instagram URL."""
         patterns = [
             # Instagram stories highlights
             r"/stories/highlights/([a-zA-Z0-9_-]+)/",
@@ -30,116 +44,250 @@ class InstagramDownload(BaseDownloader):
         for pattern in patterns:
             match = re.search(pattern, self._url)
             if match:
-                if pattern == patterns[0]:  # Check if it's the stories highlights pattern
-                    # Return the URL as it is
+                if pattern == patterns[0]:  # stories highlights
                     return self._url
                 else:
-                    # Return the code part (first group)
                     return match.group(1)
 
         return None
 
     def _setup_formats(self) -> list | None:
-        pass
+        """Instagram doesn't need format setup like YouTube."""
+        return [None]
 
-    def _download(self, formats=None):
-        try:
-            resp = requests.get(f"http://instagram:15000/?url={self._url}").json()
-        except Exception as e:
-            self._bot_msg.edit_text(f"ההורדה נכשלה!❌\n\n`{e}`")
-            pass
-
-        code = self.extract_code()
-        counter = 1
-        video_paths = []
-        found_media_types = set()
-
-        if url_results := resp.get("data"):
-            for media in url_results:
-                link = media["link"]
-                media_type = media["type"]
-
-                if media_type == "image":
-                    ext = "jpg"
-                    found_media_types.add("photo")
-                elif media_type == "video":
-                    ext = "mp4"
-                    found_media_types.add("video")
-                else:
-                    continue
-
-                try:
-                    req = requests.get(link, stream=True)
-                    length = int(req.headers.get("content-length", 0) or req.headers.get("x-full-image-content-length", 0))
-                    filename = f"Instagram_{code}-{counter}"
-                    save_path = pathlib.Path(self._tempdir.name, filename)
-                    chunk_size = 8192
-                    downloaded = 0
-                    start_time = time.time()
-
-                    with open(save_path, "wb") as fp:
-                        for chunk in req.iter_content(chunk_size):
-                            if chunk:
-                                downloaded += len(chunk)
-                                fp.write(chunk)
-
-                                elapsed_time = time.time() - start_time
-                                if elapsed_time > 0:
-                                    speed = downloaded / elapsed_time  # bytes per second
-
-                                    if speed >= 1024 * 1024:  # MB/s
-                                        speed_str = f"{speed / (1024 * 1024):.2f}MB/s"
-                                    elif speed >= 1024:  # KB/s
-                                        speed_str = f"{speed / 1024:.2f}KB/s"
-                                    else:  # B/s
-                                        speed_str = f"{speed:.2f}B/s"
-
-                                    if length > 0:
-                                        eta_seconds = (length - downloaded) / speed
-                                        if eta_seconds >= 3600:
-                                            eta_str = f"{eta_seconds / 3600:.1f}h"
-                                        elif eta_seconds >= 60:
-                                            eta_str = f"{eta_seconds / 60:.1f}m"
-                                        else:
-                                            eta_str = f"{eta_seconds:.0f}s"
-                                    else:
-                                        eta_str = "N/A"
-                                else:
-                                    speed_str = "N/A"
-                                    eta_str = "N/A"
-
-                                # dictionary for calling the download_hook
-                                d = {
-                                    "status": "downloading",
-                                    "downloaded_bytes": downloaded,
-                                    "total_bytes": length,
-                                    "_speed_str": speed_str,
-                                    "_eta_str": eta_str
-                                }
-
-                                self.download_hook(d)
-
-                    if ext := filetype.guess_extension(save_path):
-                        new_path = save_path.with_suffix(f".{ext}")
-                        save_path.rename(new_path)
-                        save_path = new_path
-
-                    video_paths.append(str(save_path))
-                    counter += 1
-
-                except Exception as e:
-                    self._bot_msg.edit_text(f"ההורדה נכשלה!❌\n\n`{e}`")
-                    return []
-
-        if "video" in found_media_types:
-            self._format = "video"
-        elif "photo" in found_media_types:
-            self._format = "photo"
+    def _download_with_ytdlp(self) -> list:
+        """Download Instagram content using yt-dlp."""
+        output = pathlib.Path(self._tempdir.name, "%(title).70s.%(ext)s").as_posix()
+        ydl_opts = {
+            "outtmpl": output,
+            "quiet": True,
+            "no_warnings": True,
+            "merge_output_format": "mp4",
+            "format": "best[ext=mp4]/best",
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            },
+            "retries": 3,
+            "fragment_retries": 3,
+            "progress_hooks": [self._ytdlp_progress_hook],
+        }
+        
+        # Add cookies if configured
+        if INSTAGRAM_COOKIES_FILE:
+            import os
+            if os.path.exists(INSTAGRAM_COOKIES_FILE):
+                ydl_opts["cookiefile"] = INSTAGRAM_COOKIES_FILE
+                logging.info("Instagram: Using cookies file for yt-dlp: %s", INSTAGRAM_COOKIES_FILE)
         else:
-            self._format = "document"
+            # Try to extract cookies from browser automatically
+            # Priority: Chrome, Firefox, Edge
+            ydl_opts["cookiesfrombrowser"] = ("chrome",)
+            logging.info("Instagram: Trying to extract cookies from Chrome browser")
 
-        return video_paths
+        try:
+            logging.info("Instagram: Trying yt-dlp with URL: %s", self._url)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([self._url])
+
+            files = list(pathlib.Path(self._tempdir.name).glob("*"))
+            if files:
+                logging.info("Instagram: yt-dlp succeeded!")
+                return [str(f) for f in files if f.is_file()]
+        except Exception as e:
+            logging.warning("Instagram: yt-dlp failed: %s", e)
+
+        return []
+
+    def _download_with_instaloader(self) -> list:
+        """Fallback download using instaloader (supports login for restricted content)."""
+        if not INSTALOADER_AVAILABLE:
+            logging.warning("Instagram: instaloader not available for fallback")
+            return []
+
+        shortcode = self.extract_code()
+        if not shortcode:
+            logging.warning("Instagram: Could not extract shortcode from URL")
+            return []
+
+        try:
+            logging.info("Instagram: Trying instaloader fallback with shortcode: %s", shortcode)
+            
+            L = instaloader.Instaloader(
+                download_videos=True,
+                download_video_thumbnails=False,
+                download_geotags=False,
+                download_comments=False,
+                save_metadata=False,
+                compress_json=False,
+                dirname_pattern=self._tempdir.name,
+                filename_pattern="{shortcode}",
+            )
+
+            # Load session if available (for age-restricted content)
+            if INSTAGRAM_SESSION_FILE:
+                try:
+                    # Extract username from session file name (format: session-USERNAME)
+                    import os
+                    session_filename = os.path.basename(INSTAGRAM_SESSION_FILE)
+                    if session_filename.startswith("session-"):
+                        username = session_filename[8:]  # Remove "session-" prefix
+                    else:
+                        username = session_filename
+                    
+                    L.load_session_from_file(username, INSTAGRAM_SESSION_FILE)
+                    logging.info("Instagram: Loaded session for user: %s", username)
+                except Exception as e:
+                    logging.warning("Instagram: Could not load session: %s", e)
+
+            # Download the post
+            post = instaloader.Post.from_shortcode(L.context, shortcode)
+            L.download_post(post, target="")
+
+            files = list(pathlib.Path(self._tempdir.name).glob("*"))
+            if files:
+                logging.info("Instagram: instaloader succeeded!")
+                # Filter out non-media files
+                media_files = [str(f) for f in files if f.suffix.lower() in ('.mp4', '.jpg', '.jpeg', '.png', '.webp')]
+                return media_files if media_files else [str(f) for f in files if f.is_file()]
+
+        except Exception as e:
+            logging.warning("Instagram: instaloader fallback failed: %s", e)
+
+        return []
+
+    def _ytdlp_progress_hook(self, d):
+        """Progress hook for yt-dlp to update download status."""
+        if d.get("status") == "downloading":
+            try:
+                self.download_hook({
+                    "status": "downloading",
+                    "downloaded_bytes": d.get("downloaded_bytes", 0),
+                    "total_bytes": d.get("total_bytes") or d.get("total_bytes_estimate", 0),
+                    "_speed_str": d.get("_speed_str", "N/A"),
+                    "_eta_str": d.get("_eta_str", "N/A"),
+                })
+            except Exception:
+                pass
+
+    def _download(self, formats=None) -> list:
+        """Download Instagram content, trying instaloader first (with session) then yt-dlp."""
+        # Log session status
+        if INSTAGRAM_SESSION_FILE:
+            logging.info("Instagram: Session file configured: %s", INSTAGRAM_SESSION_FILE)
+        else:
+            logging.info("Instagram: No session file configured, some content may be restricted")
+        
+        # Try instaloader first (better for restricted content when logged in)
+        files = self._download_with_instaloader()
+        
+        if files:
+            return files
+
+        # Fallback to yt-dlp if instaloader failed
+        logging.info("Instagram: instaloader failed, trying yt-dlp fallback")
+        files = self._download_with_ytdlp()
+
+        if files:
+            has_video = any(f.endswith(('.mp4', '.webm', '.mkv')) for f in files)
+            has_image = any(f.endswith(('.jpg', '.jpeg', '.png', '.webp')) for f in files)
+            
+            if has_video:
+                self._format = "video"
+            elif has_image:
+                self._format = "photo"
+            else:
+                self._format = "document"
+            
+            return files
+
+        # Both methods failed
+        error_msg = "הורדה מ-Instagram נכשלה!"
+        self._bot_msg.edit_text(
+            f"❌ {error_msg}\n\n"
+            "התוכן מוגבל גיל או פרטי. נסה תוכן ציבורי אחר."
+        )
+
+        # Send error report to archive channel
+        if ARCHIVE_CHANNEL:
+            try:
+                from database.model import get_user_stats
+                user_info = get_user_stats(self._from_user)
+                if user_info:
+                    name = user_info.get('first_name') or ""
+                    if user_info.get('username'):
+                        name = f"{name} @{user_info['username']}".strip()
+                    user_display = name if name else str(self._from_user)
+                else:
+                    user_display = str(self._from_user)
+
+                report = (
+                    f"❌ **דיווח שגיאה**\n"
+                    f"👤 משתמש: {user_display}\n"
+                    f"🆔 {self._from_user}\n"
+                    f"🔗 קישור: {self._url}\n"
+                    f"⚠️ שגיאה: {error_msg}"
+                )
+                self._client.send_message(
+                    chat_id=ARCHIVE_CHANNEL,
+                    text=report,
+                    disable_web_page_preview=True
+                )
+            except Exception as e:
+                logging.warning("Failed to send error to archive: %s", e)
+
+        return []
+
+    def _get_archive_caption(self, files: list) -> str:
+        """Create custom archive caption for Instagram."""
+        from pathlib import Path
+        from database.model import get_user_stats
+
+        user_info = get_user_stats(self._from_user)
+        if user_info:
+            name = user_info.get('first_name') or ""
+            if user_info.get('username'):
+                name = f"{name} @{user_info['username']}".strip()
+            user_display = name if name else str(self._from_user)
+        else:
+            user_display = str(self._from_user)
+
+        filename = "Unknown"
+        if files and len(files) > 0:
+            filename = Path(files[0]).name
+
+        return (
+            f"👤 משתמש: {user_display}\n"
+            f"🆔 {self._from_user}\n"
+            f"📁 קובץ: {filename}\n"
+            f"🔗 קישור: {self._url}"
+        )
 
     def _start(self):
+        """Start download and upload process with custom archive handling."""
         downloaded_files = self._download()
-        self._upload(files=downloaded_files)
+        if not downloaded_files:
+            return
+
+        from pathlib import Path
+
+        files = [Path(f) for f in downloaded_files] if downloaded_files else list(Path(self._tempdir.name).glob("*"))
+        meta = self.get_metadata()
+
+        success = self._upload(files=downloaded_files, meta=meta, skip_archive=True)
+
+        # Custom archive handling for Instagram
+        if ARCHIVE_CHANNEL and success:
+            try:
+                msg_id = getattr(success, 'id', None)
+                archive_caption = self._get_archive_caption(downloaded_files)
+
+                logging.info("Instagram: Copying to archive with custom caption")
+                self._client.copy_message(
+                    chat_id=ARCHIVE_CHANNEL,
+                    from_chat_id=self._chat_id,
+                    message_id=msg_id,
+                    caption=archive_caption
+                )
+                logging.info("Instagram: Forwarded to archive channel")
+            except Exception as e:
+                logging.error("Instagram: Failed to forward to archive: %s", e)
