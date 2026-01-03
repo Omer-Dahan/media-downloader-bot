@@ -34,6 +34,8 @@ from database.model import (
 )
 from engine.helper import debounce, sizeof_fmt
 
+cancellation_events = set()
+
 
 def generate_input_media(file_paths: list, cap: str) -> list:
     input_media = []
@@ -120,6 +122,7 @@ class BaseDownloader(ABC):
         return text
 
     def download_hook(self, d: dict):
+        self.check_for_cancel()
         if d["status"] == "downloading":
             downloaded = d.get("downloaded_bytes", 0)
             total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
@@ -130,17 +133,32 @@ class BaseDownloader(ABC):
 
             # percent = remove_bash_color(d.get("_percent_str", "N/A"))
             speed = self.__remove_bash_color(d.get("_speed_str", "N/A"))
-            eta = self.__remove_bash_color(d.get("_eta_str", d.get("eta")))
+            eta = self.__remove_bash_color(d.get("_eta_str") or d.get("eta") or "N/A")
             text = self.__tqdm_progress("מוריד...", total, downloaded, speed, eta)
             self.edit_text(text)
 
     def upload_hook(self, current, total):
+        self.check_for_cancel()
         text = self.__tqdm_progress("מעלה...", total, current)
         self.edit_text(text)
 
+    def check_for_cancel(self):
+        key = f"{self._chat_id}_{self._id}"
+        if key in cancellation_events:
+            cancellation_events.discard(key)
+            raise ValueError("ההורדה בוטלה על ידי המשתמש 🛑")
+
     @debounce(5)
     def edit_text(self, text: str):
-        self._bot_msg.edit_text(text)
+        # Add cancel button
+        markup = types.InlineKeyboardMarkup(
+            [[types.InlineKeyboardButton("❌ ביטול", callback_data=f"cancel:{self._chat_id}:{self._id}")]]
+        )
+        try:
+            self._bot_msg.edit_text(text, reply_markup=markup)
+        except Exception:
+            # Ignore edit errors (e.g. message not modified)
+            pass
 
     @abstractmethod
     def _setup_formats(self) -> list | None:

@@ -49,6 +49,7 @@ from database.model import (
     set_user_settings,
 )
 from engine import direct_entrance, youtube_entrance, youtube_entrance_with_quality, get_youtube_video_info, special_download_entrance
+from engine.base import cancellation_events
 from engine.generic import check_and_send_update_notification
 from utils import extract_url_and_name, sizeof_fmt, timeof_fmt, is_youtube
 from admin import admin_panel_command, admin_callback_handler, admin_text_handler, _admin_state
@@ -670,6 +671,23 @@ def youtube_quality_callback(client: Client, callback_query: types.CallbackQuery
     except Exception as e:
         logging.error("Download failed", exc_info=True)
         callback_query.message.edit_text(f"❌ ההורדה נכשלה: {e}")
+
+
+@app.on_callback_query(filters.regex(r"^cancel:"))
+def cancel_callback(client: Client, callback_query: types.CallbackQuery):
+    """Handle cancel button callback."""
+    data = callback_query.data
+    # data format: cancel:chat_id:message_id
+    try:
+        _, cid, mid = data.split(":")
+    except ValueError:
+        callback_query.answer("❌ שגיאה בזיהוי משימה לביטול", show_alert=True)
+        return
+    
+    key = f"{cid}_{mid}"
+    cancellation_events.add(key)
+    
+    callback_query.answer("🛑 מבטל...")
 
 
 if __name__ == "__main__":

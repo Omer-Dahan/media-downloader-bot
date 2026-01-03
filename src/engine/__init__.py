@@ -74,6 +74,20 @@ DOWNLOADER_MAP: dict[str, Callable[[Any, Any, str], Any]] = {
     "vt.tiktok.com": tiktok_handler,
 }
 
+# Media extensions to detect direct download links
+MEDIA_EXTENSIONS = (
+    ".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".m4v",  # video
+    ".mp3", ".m4a", ".flac", ".wav", ".aac", ".ogg", ".wma",  # audio
+    ".zip", ".rar", ".7z", ".tar", ".gz",  # archives
+)
+
+
+def is_direct_download_url(url: str) -> bool:
+    """Check if URL contains a media file extension (likely a direct download link)."""
+    url_lower = url.lower()
+    return any(ext in url_lower for ext in MEDIA_EXTENSIONS)
+
+
 def special_download_entrance(client: Any, bot_message: Any, url: str) -> Any:
     try:
         hostname = urlparse(url).hostname
@@ -90,5 +104,9 @@ def special_download_entrance(client: Any, bot_message: Any, url: str) -> Any:
     for domain_suffix, handler_function in DOWNLOADER_MAP.items():
         if hostname.endswith(domain_suffix):
             return handler_function(client, bot_message, url)
+
+    # Check if URL contains media extension - use direct download
+    if is_direct_download_url(url):
+        return direct_entrance(client, bot_message, url)
 
     raise ValueError(f"לא נמצא מוריד מתאים עבור: {hostname}")

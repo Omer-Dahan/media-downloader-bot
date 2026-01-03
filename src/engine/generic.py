@@ -416,6 +416,10 @@ class YoutubeDownload(BaseDownloader):
                     break
             except Exception as e:
                 last_error = str(e)
+                # Check if this is a cancellation - don't try next format, just stop
+                if "בוטלה" in last_error:
+                    logging.info("Download cancelled by user, stopping format attempts")
+                    raise
                 logging.warning("Format %s failed: %s, trying next...", f, e)
                 # Check if this is an extraction error
                 if is_extraction_error(last_error):
@@ -436,11 +440,18 @@ class YoutubeDownload(BaseDownloader):
     def _start(self, formats=None):
         # start download and upload, no cache hit
         # user can choose format by clicking on the button(custom config)
-        default_formats = self._setup_formats()
-        if formats is not None:
-            # formats according to user choice
-            default_formats = formats + self._setup_formats()
-        files = self._download(default_formats)
-        if not files:
-            raise ValueError("ההורדה נכשלה - לא נמצאו פורמטים זמינים. נסה לעדכן את yt-dlp.")
-        self._upload()
+        try:
+            default_formats = self._setup_formats()
+            if formats is not None:
+                # formats according to user choice
+                default_formats = formats + self._setup_formats()
+            files = self._download(default_formats)
+            if not files:
+                raise ValueError("ההורדה נכשלה - לא נמצאו פורמטים זמינים. נסה לעדכן את yt-dlp.")
+            self._upload()
+        except ValueError as e:
+            # Check if this is a cancellation
+            if "בוטלה" in str(e):
+                self._bot_msg.edit_text("🛑 ההורדה בוטלה בהצלחה")
+            else:
+                raise
