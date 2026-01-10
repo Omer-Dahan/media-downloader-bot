@@ -63,6 +63,10 @@ The following features were added and did not exist in the original upstream pro
 - 👽 Reddit platform support
 - ✍️ Full rewrite and correction of all UI and user-facing texts
 - 🧭 Improved menu structure and user interaction flow
+- ❌ **Cancel button** – users can cancel downloads mid-progress
+- 🔗 **Improved direct link downloads** – using `curl_cffi` with Chrome TLS fingerprint to bypass CDN protections
+- ⚡ **aria2 support** – optional multi-connection downloads for faster speeds (up to 16 parallel connections)
+- 🔄 **Smart deduplication** – prevents duplicate downloads based on filename, size, and duration
 
 ---
 
@@ -94,6 +98,26 @@ media-downloader-bot/
 - 🤖 Telegram Bot Token
 - 🌐 Internet connection
 - ⚙️ yt-dlp available in the environment
+- 🚀 **aria2** (optional, for faster multi-connection downloads)
+
+### Installing aria2 (Optional)
+
+**Windows:**
+```powershell
+winget install aria2.aria2
+```
+
+**Linux (Debian/Ubuntu):**
+```bash
+sudo apt-get install aria2
+```
+
+**macOS:**
+```bash
+brew install aria2
+```
+
+To enable aria2, set `ENABLE_ARIA2=true` in your `.env` file.
 
 ---
 

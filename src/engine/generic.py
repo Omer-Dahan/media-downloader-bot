@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yt_dlp
 
-from config import AUDIO_FORMAT, ARCHIVE_CHANNEL
+from config import AUDIO_FORMAT, ARCHIVE_CHANNEL, ENABLE_ARIA2
 from utils import is_youtube
 from database.model import get_format_settings, get_quality_settings
 from engine.base import BaseDownloader
@@ -355,7 +355,7 @@ class YoutubeDownload(BaseDownloader):
             formats.extend(defaults)
         return formats
 
-    def _download(self, formats, _retry_after_update: bool = False) -> list:
+    def _download(self, formats, _retry_after_update: bool = False, _use_aria2: bool = None) -> list:
         output = Path(self._tempdir.name, "%(title).70s.%(ext)s").as_posix()
         ydl_opts = {
             "progress_hooks": [lambda d: self.download_hook(d)],
@@ -370,11 +370,27 @@ class YoutubeDownload(BaseDownloader):
             "skip_unavailable_fragments": True,
             "embed_metadata": True,
             "embed_thumbnail": True,
-            "writethumbnail": False,
+            "writethumbnail": True,
             # Ensure MP4 output for Telegram inline streaming support
             "merge_output_format": "mp4",
         }
         
+        # Use aria2 as external downloader if enabled (faster multi-connection downloads)
+        # _use_aria2=None means use config setting, True/False forces the value
+        # Note: aria2 doesn't work well with YouTube's fragmented streams (DASH/HLS)
+        # For YouTube, we use yt-dlp's built-in concurrent_fragments instead
+        use_aria2 = ENABLE_ARIA2 if _use_aria2 is None else _use_aria2
+        if use_aria2 and not is_youtube(self._url):
+            logging.info("[DOWNLOAD METHOD: aria2] Using aria2c as external downloader with 16 connections")
+            ydl_opts["external_downloader"] = "aria2c"
+            ydl_opts["external_downloader_args"] = {
+                "aria2c": ["-x16", "-s16", "-k1M", "--max-tries=3", "--retry-wait=3"]
+            }
+        else:
+            if is_youtube(self._url):
+                logging.info("[DOWNLOAD METHOD: yt-dlp] Using built-in downloader (YouTube fragmented stream)")
+            else:
+                logging.info("[DOWNLOAD METHOD: yt-dlp] Using built-in yt-dlp downloader")
         # Add MP3 conversion for audio-only downloads
         if self._selected_quality == 'audio':
             ydl_opts["postprocessors"] = [{
@@ -431,9 +447,14 @@ class YoutubeDownload(BaseDownloader):
             logging.info("Extraction error detected, attempting yt-dlp auto-update...")
             if try_update_ytdlp():
                 logging.info("Retrying download after yt-dlp update...")
-                return self._download(formats, _retry_after_update=True)
+                return self._download(formats, _retry_after_update=True, _use_aria2=use_aria2)
             else:
                 logging.warning("yt-dlp auto-update failed or already attempted")
+        
+        # Fallback: if aria2 was used and failed, retry with built-in yt-dlp downloader
+        if not files and use_aria2 and _use_aria2 is None:
+            logging.warning("[aria2 FALLBACK] aria2 failed, retrying with built-in yt-dlp downloader...")
+            return self._download(formats, _retry_after_update=_retry_after_update, _use_aria2=False)
 
         return files
 

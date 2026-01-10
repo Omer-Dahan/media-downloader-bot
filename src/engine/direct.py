@@ -45,7 +45,7 @@ class DirectDownload(BaseDownloader):
 
     def _requests_download(self):
         """Download using curl_cffi (Chrome impersonation) with streaming support for large files."""
-        logging.info("Requests download with url %s", self._url)
+        logging.info("[DOWNLOAD METHOD: curl_cffi/requests] Starting download: %s", self._url)
         
         # Extract origin for Referer header
         parsed = urlparse(self._url)
@@ -185,11 +185,12 @@ class DirectDownload(BaseDownloader):
         return [file.as_posix()]
 
     def _aria2_download(self):
+        logging.info("[DOWNLOAD METHOD: aria2] Starting multi-connection download: %s", self._url)
         ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
         # filename = self._get_aria2_name()
         self._process = None
         try:
-            self._bot_msg.edit_text("ההורדה באמצעות Aria2 מתחילה...")
+            self._bot_msg.edit_text("⚡ ההורדה באמצעות Aria2 מתחילה...")
             temp_dir = self._tempdir.name
             command = [
                 "aria2c",
@@ -306,6 +307,7 @@ class DirectDownload(BaseDownloader):
         return 0
 
     def _download(self, formats=None) -> list:
+        logging.info("[DirectDownload] ENABLE_ARIA2=%s", ENABLE_ARIA2)
         if ENABLE_ARIA2:
             return self._aria2_download()
         return self._requests_download()

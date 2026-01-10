@@ -440,9 +440,15 @@ def admin_text_handler(client: Client, message: types.Message):
     if user_id not in _admin_state:
         return
     
+    text = message.text.strip()
+    
+    # If it's a command (starts with /), clear state and let other handlers process it
+    if text.startswith("/"):
+        _admin_state.pop(user_id, None)
+        return
+    
     state = _admin_state[user_id]
     action = state.get("action")
-    text = message.text.strip()
     
     if action == "add_credits":
         try:
@@ -450,10 +456,11 @@ def admin_text_handler(client: Client, message: types.Message):
             target_id = int(parts[0])
             amount = int(parts[1])
             add_paid_quota(target_id, amount)
-            message.reply_text(f"✅ נוספו {amount} קרדיטים למשתמש {target_id}\n\n💡 שלח עוד `USER_ID + כמות` או /adminpanel לחזרה", quote=True)
+            message.reply_text(f"✅ נוספו {amount} קרדיטים למשתמש {target_id}", quote=True)
         except (ValueError, IndexError):
             message.reply_text("❌ פורמט שגוי. השתמש: `USER_ID כמות`", quote=True)
-        # Don't clear state - allow continuous adding until user goes back
+        finally:
+            _admin_state.pop(user_id, None)
     
     elif action == "reset_quota":
         try:

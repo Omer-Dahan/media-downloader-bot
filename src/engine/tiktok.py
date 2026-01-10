@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
 # coding: utf-8
-
 # ytdlbot - tiktok.py
-# TikTok downloader with yt-dlp primary and tiktokapipy fallback
+# TikTok downloader with yt-dlp for videos and gallery-dl for slideshows
 
 import logging
 import pathlib
+import subprocess
 import requests
-from typing import Optional
+from typing import Optional, Tuple
 
 import yt_dlp
 
 from config import ARCHIVE_CHANNEL
 from engine.base import BaseDownloader
+
+# Check if gallery-dl is available for slideshow downloads
+try:
+    import gallery_dl
+    GALLERY_DL_AVAILABLE = True
+except ImportError:
+    GALLERY_DL_AVAILABLE = False
+    logging.info("gallery-dl not available, slideshow support will be limited")
 
 
 def resolve_tiktok_url(url: str) -> str:
@@ -49,8 +57,16 @@ except Exception:
     TIKTOKAPIPY_AVAILABLE = False
 
 
+def is_tiktok_slideshow(url: str) -> bool:
+    """
+    Check if a TikTok URL points to a slideshow (photo post) rather than a video.
+    Slideshow URLs typically contain '/photo/' in the path.
+    """
+    return '/photo/' in url.lower()
+
+
 class TikTokDownload(BaseDownloader):
-    """Downloader for TikTok videos using yt-dlp with tiktokapipy fallback."""
+    """Downloader for TikTok videos (yt-dlp) and slideshows (gallery-dl)."""
 
     def _setup_formats(self) -> list | None:
         """TikTok doesn't need format setup like YouTube."""
@@ -85,6 +101,57 @@ class TikTokDownload(BaseDownloader):
             logging.warning("TikTok: yt-dlp failed: %s", e)
 
         return []
+
+    def _download_slideshow_with_gallery_dl(self, url: str) -> Tuple[list, Optional[str]]:
+        """
+        Download TikTok slideshow using gallery-dl.
+        Returns tuple of (image_files, audio_file) where audio_file may be None.
+        """
+        if not GALLERY_DL_AVAILABLE:
+            logging.warning("TikTok: gallery-dl not available for slideshow")
+            return [], None
+
+        try:
+            logging.info("TikTok: Downloading slideshow with gallery-dl: %s", url)
+            
+            # Use gallery-dl programmatically
+            from gallery_dl import config, job
+            
+            # Configure gallery-dl
+            config.clear()
+            config.set(("extractor",), "base-directory", self._tempdir.name)
+            config.set(("extractor",), "directory", [])  # No subdirectories
+            config.set(("extractor", "tiktok"), "videos", True)  # Include audio
+            
+            # Run the download job
+            download_job = job.DownloadJob(url)
+            download_job.run()
+            
+            # Collect downloaded files
+            all_files = list(pathlib.Path(self._tempdir.name).glob("*"))
+            
+            image_files = []
+            audio_file = None
+            
+            for f in all_files:
+                if f.is_file():
+                    ext = f.suffix.lower()
+                    if ext in ['.jpg', '.jpeg', '.png', '.webp']:
+                        image_files.append(str(f))
+                    elif ext in ['.mp3', '.m4a', '.aac', '.wav', '.ogg']:
+                        audio_file = str(f)
+            
+            if image_files:
+                logging.info("TikTok: gallery-dl found %d images and audio=%s", 
+                           len(image_files), bool(audio_file))
+                # Sort images by name to maintain order
+                image_files.sort()
+                return image_files, audio_file
+                
+        except Exception as e:
+            logging.warning("TikTok: gallery-dl slideshow download failed: %s", e)
+
+        return [], None
 
     def _download_with_tiktokapipy_url(self, url: str) -> list:
         """Fallback download using tiktokapipy."""
@@ -126,14 +193,38 @@ class TikTokDownload(BaseDownloader):
         return []
 
     def _download(self, formats=None) -> list:
-        """Download TikTok video, trying yt-dlp first then tiktokapipy."""
+        """Download TikTok content - videos with yt-dlp, slideshows with gallery-dl."""
         # Store original URL for caption/display (user wants original link, not resolved redirect)
         self._original_url = self._url
         
         # Resolve short URLs to full URLs for download only
         self._resolved_url = resolve_tiktok_url(self._url)
         
-        # Try yt-dlp first (usually more reliable and faster)
+        # Initialize slideshow-related attributes
+        self._is_slideshow = False
+        self._slideshow_images = []
+        self._slideshow_audio = None
+        
+        # Check if this is a slideshow (photo post)
+        if is_tiktok_slideshow(self._resolved_url):
+            logging.info("TikTok: Detected slideshow URL, using gallery-dl")
+            self._is_slideshow = True
+            
+            images, audio = self._download_slideshow_with_gallery_dl(self._resolved_url)
+            if images:
+                self._slideshow_images = images
+                self._slideshow_audio = audio
+                self._format = "photo"
+                # Return all files (images + audio if exists)
+                all_files = images.copy()
+                if audio:
+                    all_files.append(audio)
+                return all_files
+            
+            # Slideshow detected but gallery-dl failed, try yt-dlp as fallback
+            logging.warning("TikTok: gallery-dl failed for slideshow, trying yt-dlp")
+        
+        # Try yt-dlp for videos (or as fallback for slideshows)
         files = self._download_with_ytdlp_url(self._resolved_url)
         
         if files:
@@ -147,7 +238,7 @@ class TikTokDownload(BaseDownloader):
             self._format = "video"
             return files
         
-        # Both failed - report to archive channel and show error to user
+        # All methods failed - report to archive channel and show error to user
         error_msg = "הורדה מ-TikTok נכשלה!"
         self._bot_msg.edit_text(
             f"❌ {error_msg}\n\n"
@@ -226,14 +317,69 @@ class TikTokDownload(BaseDownloader):
         if not downloaded_files:
             return
         
-        # Upload to user
         from pathlib import Path
-        import json
+        from pyrogram import types
         
-        files = [Path(f) for f in downloaded_files] if downloaded_files else list(Path(self._tempdir.name).glob("*"))
-        meta = self.get_metadata()
+        success = None
         
-        success = self._upload(files=downloaded_files, meta=meta, skip_archive=True)
+        # Handle slideshow (images + audio) differently from video
+        if self._is_slideshow and self._slideshow_images:
+            logging.info("TikTok: Uploading slideshow with %d images", len(self._slideshow_images))
+            
+            # Create caption for the images
+            caption = f"🖼️ תמונות מ-TikTok\n🔗 {self._original_url}"
+            
+            # Send images as album (media group)
+            if len(self._slideshow_images) > 1:
+                # Build media group for multiple images
+                media_group = []
+                for i, img_path in enumerate(self._slideshow_images[:10]):  # Telegram limit: 10 items
+                    if i == 0:
+                        media_group.append(types.InputMediaPhoto(media=img_path, caption=caption))
+                    else:
+                        media_group.append(types.InputMediaPhoto(media=img_path))
+                
+                try:
+                    success = self._client.send_media_group(
+                        chat_id=self._chat_id,
+                        media=media_group
+                    )
+                    if isinstance(success, list) and len(success) > 0:
+                        success = success[0]  # Get first message for archive
+                except Exception as e:
+                    logging.error("TikTok: Failed to send image album: %s", e)
+            else:
+                # Single image
+                try:
+                    success = self._client.send_photo(
+                        chat_id=self._chat_id,
+                        photo=self._slideshow_images[0],
+                        caption=caption
+                    )
+                except Exception as e:
+                    logging.error("TikTok: Failed to send single image: %s", e)
+            
+            # Send audio file separately if available
+            if self._slideshow_audio:
+                try:
+                    audio_caption = "🎵 אודיו מה-Slideshow"
+                    self._client.send_audio(
+                        chat_id=self._chat_id,
+                        audio=self._slideshow_audio,
+                        caption=audio_caption
+                    )
+                    logging.info("TikTok: Sent slideshow audio")
+                except Exception as e:
+                    logging.warning("TikTok: Failed to send audio: %s", e)
+            
+            # Mark as complete
+            self._bot_msg.edit_text("✅ הושלם בהצלחה")
+        
+        else:
+            # Regular video upload
+            files = [Path(f) for f in downloaded_files]
+            meta = self.get_metadata()
+            success = self._upload(files=downloaded_files, meta=meta, skip_archive=True)
         
         # Custom archive handling for TikTok with both URLs
         if ARCHIVE_CHANNEL and success:

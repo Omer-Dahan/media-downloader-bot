@@ -447,11 +447,16 @@ def ytdl_handler(client: Client, message: types.Message):
         return
 
 
-def check_link(url: str):
+def check_link(url: str, uid: int = None):
     ytdl = yt_dlp.YoutubeDL()
     if re.findall(r"^https://www\.youtube\.com/channel/", url) or "list" in url:
-        # TODO maybe using ytdl.extract_info
-        raise ValueError("הורדת פלייליסט או ערוץ לא נתמכת כרגע.")
+        # Check if user has paid quota - only paid users can download playlists
+        if uid is not None:
+            paid = get_paid_quota(uid)
+            if paid and paid > 5:
+                return None  # Allow playlist download for paid users
+        # Return special marker for playlist/channel blocked - the handler will show button
+        return "PLAYLIST_BLOCKED"
 
     if not M3U8_SUPPORT and (re.findall(r"m3u8|\.m3u8|\.m3u$", url.lower())):
         return "קישורי m3u8 מושבתים."
@@ -489,7 +494,25 @@ def download_handler(client: Client, message: types.Message):
     logging.info("start %s", url)
 
     try:
-        check_link(url)
+        link_check_result = check_link(url, chat_id)
+        
+        # Handle playlist/channel blocked for non-paid users
+        if link_check_result == "PLAYLIST_BLOCKED":
+            markup = types.InlineKeyboardMarkup([
+                [types.InlineKeyboardButton("💬 צור קשר לגישה מורחבת", url="https://t.me/YD_IL")]
+            ])
+            message.reply_text(
+                "🎵 **הורדת פלייליסט או ערוץ**\n\n"
+                "פיצ'ר זה זמין למשתמשים עם מנוי בלבד.\n"
+                "רוצה גישה? צור איתי קשר! 👇",
+                reply_markup=markup,
+                quote=True
+            )
+            return
+        elif link_check_result:
+            # Other error messages (like m3u8 disabled)
+            message.reply_text(link_check_result, quote=True)
+            return
         
         # Check if this is a YouTube link - show quality selection menu
         if is_youtube(url):
