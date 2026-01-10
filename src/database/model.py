@@ -57,6 +57,7 @@ class Setting(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     quality = Column(Enum("high", "medium", "low", "audio", "custom"), nullable=False, default="high")
     format = Column(Enum("video", "audio", "document"), nullable=False, default="video")
+    subtitles = Column(Integer, nullable=False, default=0)  # 0 = off, 1 = on
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     user = relationship("User", back_populates="settings")
@@ -128,8 +129,17 @@ def get_format_settings(tgid) -> Literal["video", "audio", "document"]:
         return "video"
 
 
-def set_user_settings(tgid: int, key: str, value: str):
-    # set quality or format settings
+def get_subtitles_settings(tgid) -> bool:
+    """Check if user has subtitles download enabled."""
+    with session_manager() as session:
+        user = session.query(User).filter(User.user_id == tgid).first()
+        if user and user.settings:
+            return bool(user.settings.subtitles)
+        return False
+
+
+def set_user_settings(tgid: int, key: str, value):
+    # set quality, format, or subtitles settings
     with session_manager() as session:
         # find user first
         user = session.query(User).filter(User.user_id == tgid).first()

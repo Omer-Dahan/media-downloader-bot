@@ -29,6 +29,7 @@ from database.model import (
     get_free_quota,
     get_paid_quota,
     get_quality_settings,
+    get_subtitles_settings,
     get_user_stats,
     use_quota,
 )
@@ -69,6 +70,7 @@ class BaseDownloader(ABC):
         self._redis = Redis()
         self._quality = get_quality_settings(self._chat_id)
         self._format = get_format_settings(self._chat_id)
+        self._subtitles = get_subtitles_settings(self._chat_id)
 
     def __del__(self):
         self._tempdir.cleanup()
@@ -219,8 +221,21 @@ class BaseDownloader(ABC):
             return self._methods[_type](**send_args)
 
     def get_metadata(self):
-        video_path = list(Path(self._tempdir.name).glob("*"))[0]
-        filename = Path(video_path).name
+        # Find video/audio files only (exclude subtitles, thumbnails, etc.)
+        video_extensions = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4v'}
+        audio_extensions = {'.mp3', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.flac'}
+        allowed_extensions = video_extensions | audio_extensions
+        
+        all_files = list(Path(self._tempdir.name).glob("*"))
+        media_files = [f for f in all_files if f.suffix.lower() in allowed_extensions]
+        
+        if not media_files:
+            # Fallback to first file if no media files found
+            video_path = all_files[0] if all_files else None
+        else:
+            video_path = media_files[0]
+        
+        filename = Path(video_path).name if video_path else "unknown"
         width = height = duration = 0
         try:
             video_streams = ffmpeg.probe(video_path, select_streams="v")
@@ -254,6 +269,22 @@ class BaseDownloader(ABC):
             files = list(Path(self._tempdir.name).glob("*"))
         if meta is None:
             meta = self.get_metadata()
+
+        # Separate subtitle and thumbnail files from actual video/audio files
+        subtitle_extensions = {'.srt', '.vtt', '.ass', '.sub'}
+        thumbnail_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+        subtitle_files = [f for f in files if Path(f).suffix.lower() in subtitle_extensions]
+        
+        # Filter to only video/audio files (exclude subtitles and thumbnails)
+        video_extensions = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4v'}
+        audio_extensions = {'.mp3', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.flac'}
+        allowed_extensions = video_extensions | audio_extensions
+        
+        media_files = [f for f in files if Path(f).suffix.lower() in allowed_extensions]
+        
+        # Use media files for main upload (if found)
+        if media_files:
+            files = media_files
 
         success = SimpleNamespace(document=None, video=None, audio=None, animation=None, photo=None)
         if self._format == "document":
@@ -389,6 +420,20 @@ class BaseDownloader(ABC):
                 logging.info("Forwarded to archive channel: %s", ARCHIVE_CHANNEL)
             except Exception as e:
                 logging.error("Failed to forward to archive channel: %s", e)
+        
+        # Send subtitle files if user has subtitles enabled and files were found
+        if subtitle_files and self._subtitles:
+            for sub_file in subtitle_files:
+                try:
+                    sub_path = Path(sub_file)
+                    self._client.send_document(
+                        chat_id=self._chat_id,
+                        document=str(sub_path),
+                        caption=f"📝 כתוביות: {sub_path.name}"
+                    )
+                    logging.info("Sent subtitle file: %s", sub_path.name)
+                except Exception as e:
+                    logging.error("Failed to send subtitle file %s: %s", sub_file, e)
         
         # change progress bar to done
         self._bot_msg.edit_text("✅ הושלם בהצלחה")

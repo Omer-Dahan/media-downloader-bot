@@ -375,10 +375,14 @@ class YoutubeDownload(BaseDownloader):
             "merge_output_format": "mp4",
         }
         
-        # Use aria2 as external downloader if enabled (faster multi-connection downloads)
-        # _use_aria2=None means use config setting, True/False forces the value
-        # Note: aria2 doesn't work well with YouTube's fragmented streams (DASH/HLS)
-        # For YouTube, we use yt-dlp's built-in concurrent_fragments instead
+        # Add subtitle options if user has subtitles enabled
+        if self._subtitles:
+            logging.info("Subtitles enabled - will download English subtitles if available")
+            ydl_opts["writesubtitles"] = True
+            ydl_opts["writeautomaticsub"] = True  # Include auto-generated subs
+            ydl_opts["subtitleslangs"] = ["en", "en-orig", "en-US", "en-GB"]  # English priority
+            ydl_opts["subtitlesformat"] = "srt"
+        
         use_aria2 = ENABLE_ARIA2 if _use_aria2 is None else _use_aria2
         if use_aria2 and not is_youtube(self._url):
             logging.info("[DOWNLOAD METHOD: aria2] Using aria2c as external downloader with 16 connections")

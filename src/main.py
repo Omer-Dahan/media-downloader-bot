@@ -44,6 +44,7 @@ from database.model import (
     get_free_quota,
     get_paid_quota,
     get_quality_settings,
+    get_subtitles_settings,
     init_user,
     reset_free,
     set_user_settings,
@@ -363,6 +364,14 @@ def settings_handler(client: Client, message: types.Message):
     chat_id = message.chat.id
     init_user(chat_id)
     client.send_chat_action(chat_id, enums.ChatAction.TYPING)
+    
+    # Get current subtitle setting to show correct button
+    subtitles_enabled = get_subtitles_settings(chat_id)
+    subtitle_button = types.InlineKeyboardButton(
+        "כתוביות: ✅" if subtitles_enabled else "כתוביות: ❌",
+        callback_data="subtitles_off" if subtitles_enabled else "subtitles_on"
+    )
+    
     markup = types.InlineKeyboardMarkup(
         [
             [  # First row
@@ -375,12 +384,16 @@ def settings_handler(client: Client, message: types.Message):
                 types.InlineKeyboardButton("איכות בינונית", callback_data="medium"),
                 types.InlineKeyboardButton("איכות נמוכה", callback_data="low"),
             ],
+            [  # third row - subtitles toggle
+                subtitle_button,
+            ],
         ]
     )
 
     quality = get_quality_settings(chat_id)
     send_type = get_format_settings(chat_id)
-    client.send_message(chat_id, BotText.settings.format(quality, send_type), reply_markup=markup)
+    subtitles_status = "מופעל ✅" if subtitles_enabled else "כבוי ❌"
+    client.send_message(chat_id, BotText.settings.format(quality, send_type, subtitles_status), reply_markup=markup)
 
 
 @app.on_message(filters.command(["direct"]))
@@ -597,6 +610,11 @@ def format_callback(client: Client, callback_query: types.CallbackQuery):
     # Update the message with new settings
     quality = get_quality_settings(chat_id)
     send_type = get_format_settings(chat_id)
+    subtitles_enabled = get_subtitles_settings(chat_id)
+    subtitle_button = types.InlineKeyboardButton(
+        "כתוביות: ✅" if subtitles_enabled else "כתוביות: ❌",
+        callback_data="subtitles_off" if subtitles_enabled else "subtitles_on"
+    )
     markup = types.InlineKeyboardMarkup(
         [
             [
@@ -609,9 +627,14 @@ def format_callback(client: Client, callback_query: types.CallbackQuery):
                 types.InlineKeyboardButton("איכות בינונית", callback_data="medium"),
                 types.InlineKeyboardButton("איכות נמוכה", callback_data="low"),
             ],
+            [subtitle_button],
         ]
     )
-    callback_query.message.edit_text(BotText.settings.format(quality, send_type), reply_markup=markup)
+    subtitles_status = "מופעל ✅" if subtitles_enabled else "כבוי ❌"
+    try:
+        callback_query.message.edit_text(BotText.settings.format(quality, send_type, subtitles_status), reply_markup=markup)
+    except pyrogram.errors.MessageNotModified:
+        pass  # Ignore if message content unchanged
 
 
 @app.on_callback_query(filters.regex(r"^high$|^medium$|^low$"))
@@ -625,6 +648,11 @@ def quality_callback(client: Client, callback_query: types.CallbackQuery):
     # Update the message with new settings
     quality = get_quality_settings(chat_id)
     send_type = get_format_settings(chat_id)
+    subtitles_enabled = get_subtitles_settings(chat_id)
+    subtitle_button = types.InlineKeyboardButton(
+        "כתוביות: ✅" if subtitles_enabled else "כתוביות: ❌",
+        callback_data="subtitles_off" if subtitles_enabled else "subtitles_on"
+    )
     markup = types.InlineKeyboardMarkup(
         [
             [
@@ -637,9 +665,59 @@ def quality_callback(client: Client, callback_query: types.CallbackQuery):
                 types.InlineKeyboardButton("איכות בינונית", callback_data="medium"),
                 types.InlineKeyboardButton("איכות נמוכה", callback_data="low"),
             ],
+            [subtitle_button],
         ]
     )
-    callback_query.message.edit_text(BotText.settings.format(quality, send_type), reply_markup=markup)
+    subtitles_status = "מופעל ✅" if subtitles_enabled else "כבוי ❌"
+    try:
+        callback_query.message.edit_text(BotText.settings.format(quality, send_type, subtitles_status), reply_markup=markup)
+    except pyrogram.errors.MessageNotModified:
+        pass  # Ignore if message content unchanged
+
+
+@app.on_callback_query(filters.regex(r"^subtitles_on$|^subtitles_off$"))
+def subtitles_callback(client: Client, callback_query: types.CallbackQuery):
+    """Handle subtitles toggle callback."""
+    chat_id = callback_query.message.chat.id
+    data = callback_query.data
+    
+    # Set subtitles preference (1 for on, 0 for off)
+    new_value = 1 if data == "subtitles_on" else 0
+    set_user_settings(chat_id, "subtitles", new_value)
+    
+    if new_value:
+        callback_query.answer("✅ הורדת כתוביות הופעלה")
+    else:
+        callback_query.answer("❌ הורדת כתוביות כובתה")
+    
+    # Update the message with new settings
+    quality = get_quality_settings(chat_id)
+    send_type = get_format_settings(chat_id)
+    subtitles_enabled = bool(new_value)
+    subtitle_button = types.InlineKeyboardButton(
+        "כתוביות: ✅" if subtitles_enabled else "כתוביות: ❌",
+        callback_data="subtitles_off" if subtitles_enabled else "subtitles_on"
+    )
+    markup = types.InlineKeyboardMarkup(
+        [
+            [
+                types.InlineKeyboardButton("שלח כקובץ", callback_data="document"),
+                types.InlineKeyboardButton("שלח כוידאו", callback_data="video"),
+                types.InlineKeyboardButton("שלח כשמע", callback_data="audio"),
+            ],
+            [
+                types.InlineKeyboardButton("איכות גבוהה", callback_data="high"),
+                types.InlineKeyboardButton("איכות בינונית", callback_data="medium"),
+                types.InlineKeyboardButton("איכות נמוכה", callback_data="low"),
+            ],
+            [subtitle_button],
+        ]
+    )
+    subtitles_status = "מופעל ✅" if subtitles_enabled else "כבוי ❌"
+    try:
+        callback_query.message.edit_text(BotText.settings.format(quality, send_type, subtitles_status), reply_markup=markup)
+    except pyrogram.errors.MessageNotModified:
+        pass  # Ignore if message content unchanged
 
 
 @app.on_callback_query(filters.regex(r"^ytq:"))

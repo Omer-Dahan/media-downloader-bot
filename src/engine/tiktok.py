@@ -87,6 +87,14 @@ class TikTokDownload(BaseDownloader):
             "retries": 3,
             "fragment_retries": 3,
         }
+        
+        # Add subtitle options if user has subtitles enabled
+        if self._subtitles:
+            logging.info("TikTok: Subtitles enabled - will download if available")
+            ydl_opts["writesubtitles"] = True
+            ydl_opts["writeautomaticsub"] = True
+            ydl_opts["subtitleslangs"] = ["en", "en-orig", "en-US"]
+            ydl_opts["subtitlesformat"] = "srt"
 
         try:
             logging.info("TikTok: Trying yt-dlp with URL: %s", url)

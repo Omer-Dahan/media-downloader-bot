@@ -91,6 +91,7 @@ YouTube, Instagram, TikTok, Facebook, Twitter (X), SoundCloud, Reddit
 📝 **ההגדרות הנוכחיות שלך:**
 איכות וידאו: {}
 סוג משלוח: {}
+כתוביות: {}
 """
 
     youtube_quality_select = """
