@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-# ytdlbot - __init__.py.py
-
 from urllib.parse import urlparse
 from typing import Any, Callable
 

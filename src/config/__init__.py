@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-# ytdlbot - __init__.py.py
-
 import logging
 
 from dotenv import load_dotenv

@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-# ytdlbot - tiktok.py
-# TikTok downloader with yt-dlp for videos and gallery-dl for slideshows
-
 import logging
 import pathlib
 import subprocess

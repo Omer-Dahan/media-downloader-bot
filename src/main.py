@@ -1,12 +1,3 @@
-#!/usr/local/bin/python3
-# coding: utf-8
-
-# ytdlbot - new.py
-# 8/14/21 14:37
-#
-
-__author__ = "Benny <benny.think@gmail.com>"
-
 import logging
 import os
 import re

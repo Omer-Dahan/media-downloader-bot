@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-"""
-Admin Panel - Management interface for bot owners
-"""
-
 import time
 import logging
 from pyrogram import Client, filters, types
@@ -482,9 +475,3 @@ def admin_text_handler(client: Client, message: types.Message):
         finally:
             _admin_state.pop(user_id, None)
 
-
-def register_admin_handlers(app: Client):
-    """Register all admin handlers with the app"""
-    app.on_message(filters.command(["adminpanel"]))(admin_panel_command)
-    app.on_callback_query(filters.regex(r"^admin:"))(admin_callback_handler)
-    # Text handler for admin input - will be checked manually in the handler

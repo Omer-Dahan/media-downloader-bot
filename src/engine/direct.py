@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-# ytdlbot - direct.py
-
 import logging
 import os
 import re
@@ -29,19 +24,6 @@ class DirectDownload(BaseDownloader):
     def _setup_formats(self) -> list | None:
         # direct download doesn't need to setup formats
         pass
-
-    # def _get_aria2_name(self):
-    #     try:
-    #         cmd = f"aria2c --truncate-console-readout=true -x10 --dry-run --file-allocation=none {self._url}"
-    #         result = subprocess.run(cmd, stdout=subprocess.PIPE, shell=True)
-    #         stdout_str = result.stdout.decode("utf-8")
-    #         name = os.path.basename(stdout_str).split("\n")[0]
-    #         if len(name) == 0:
-    #             name = os.path.basename(self._url)
-    #         return name
-    #     except Exception:
-    #         name = os.path.basename(self._url)
-    #         return name
 
     def _requests_download(self):
         """Download using curl_cffi (Chrome impersonation) with streaming support for large files."""

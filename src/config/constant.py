@@ -1,12 +1,3 @@
-#!/usr/local/bin/python3
-# coding: utf-8
-
-# ytdlbot - constant.py
-# 8/16/21 16:59
-#
-
-__author__ = "Benny <benny.think@gmail.com>"
-
 import typing
 
 from pyrogram import Client, types

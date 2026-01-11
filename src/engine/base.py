@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-# ytdlbot - types.py
-
 import hashlib
 import json
 import logging

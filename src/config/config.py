@@ -1,12 +1,3 @@
-#!/usr/local/bin/python3
-# coding: utf-8
-
-# ytdlbot - config.py
-# 8/28/21 15:01
-#
-
-__author__ = "Benny <benny.think@gmail.com>"
-
 import os
 
 
@@ -33,14 +24,11 @@ OWNER = [int(i) for i in str(get_env("OWNER")).split(",")]
 # db settings
 AUTHORIZED_USER: str = get_env("AUTHORIZED_USER", "")
 DB_DSN = get_env("DB_DSN")
-REDIS_HOST = get_env("REDIS_HOST")
 
 ENABLE_FFMPEG = get_env("ENABLE_FFMPEG")
 AUDIO_FORMAT = get_env("AUDIO_FORMAT", "m4a")
 M3U8_SUPPORT = get_env("M3U8_SUPPORT")
 ENABLE_ARIA2 = get_env("ENABLE_ARIA2")
-
-RCLONE_PATH = get_env("RCLONE")
 
 # payment settings
 ENABLE_VIP = get_env("ENABLE_VIP")

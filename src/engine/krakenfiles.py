@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-# ytdlbot - krakenfiles.py
-
-__author__ = "SanujaNS <sanujas@sanuja.biz>"
-
 import requests
 from bs4 import BeautifulSoup
 from engine.direct import DirectDownload

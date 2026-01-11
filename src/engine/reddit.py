@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-# ytdlbot - reddit.py
-
 import logging
 import pathlib
 import requests

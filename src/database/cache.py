@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-# ytdlbot - cache.py
-# Video cache using SQLite instead of Redis
-
 import json
 import logging
 import os

@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-# ytdlbot - instagram.py
-# Instagram downloader using yt-dlp with instaloader fallback
-
 import logging
 import pathlib
 import re

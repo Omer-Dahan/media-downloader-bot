@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-
-# ytdlbot - pixeldrain.py
-
-__author__ = "SanujaNS <sanujas@sanuja.biz>"
-
 import tempfile
 import pathlib
 import re

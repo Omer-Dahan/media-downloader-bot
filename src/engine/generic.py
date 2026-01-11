@@ -1,7 +1,3 @@
-#!/usr/bin/env python3
-# coding: utf-8
-# ytdlbot - generic.py
-
 import logging
 import os
 import subprocess
