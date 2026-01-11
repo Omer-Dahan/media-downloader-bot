@@ -97,30 +97,30 @@ class BaseDownloader(ABC):
             else:
                 return ""
 
-        f = StringIO()
-        tqdm(
-            total=total,
-            initial=finished,
-            file=f,
-            ascii=False,
-            unit_scale=True,
-            ncols=30,
-            bar_format="{l_bar}{bar} |{n_fmt}/{total_fmt} ",
-        )
-        raw_output = f.getvalue()
-        tqdm_output = raw_output.split("|")
-        progress = f"`[{tqdm_output[1]}]`"
-        detail = tqdm_output[2].replace("[A", "")
+        # Calculate percentage
+        if total > 0:
+            percent = int((finished / total) * 100)
+        else:
+            percent = 0
         
-        # Modern RTL style progress display
+        # Create circle-based progress bar (10 circles) - RTL order (empty first, filled last)
+        filled_circles = percent // 10  # Each circle = 10%
+        empty_circles = 10 - filled_circles
+        progress_bar = "⚪️" * empty_circles + "🟢" * filled_circles
+        
+        # Format file size progress
+        from engine.helper import sizeof_fmt
+        size_progress = f"{sizeof_fmt(finished)}/{sizeof_fmt(total)}"
+        
+        # Modern RTL style progress display with circle bar
         text = f"""‏📥 **{desc}**
-━━━━━━━━━━━━━━━━━━
-{progress}
-‏📊 {detail}
+‏━━━━━━━━━━━━━━━━━━
+‏{percent}%
+‏{progress_bar}
+‏📊 {size_progress}
 {more("‏⚡ מהירות:", speed)}
 {more("‏⏱️ זמן משוער:", eta)}
-━━━━━━━━━━━━━━━━━━"""
-        f.close()
+‏━━━━━━━━━━━━━━━━━━"""
         return text
 
     def download_hook(self, d: dict):
@@ -261,7 +261,10 @@ class BaseDownloader(ABC):
         duration_seconds = duration % 60
         duration_str = f"{duration_minutes}:{duration_seconds:02d} דקות"
         
-        caption = f"🔗 מקור:\n{self._url}\n📐 רזולוציה: {width}x{height}\n⏱️ אורך: {duration_str}\n⬇️ הקובץ מוכן לצפייה והורדה\nצפייה מהנה 👀✨"
+        # Extract title from filename (without extension)
+        title = Path(video_path).stem if video_path else "Unknown"
+        
+        caption = f"🎬 {title}\n\n🔗 מקור:\n{self._url}\n📐 רזולוציה: {width}x{height}\n⏱️ אורך: {duration_str}\n⬇️ הקובץ מוכן לצפייה והורדה\nצפייה מהנה 👀✨"
         return dict(height=height, width=width, duration=duration, thumb=thumb, caption=caption)
 
     def _upload(self, files=None, meta=None, skip_archive=False):
@@ -401,23 +404,33 @@ class BaseDownloader(ABC):
                 if files and len(files) > 0:
                     filename = Path(files[0]).name
 
-                # Create archive caption without link
+                # Create archive caption with link
                 archive_caption = (
                     f"👤 משתמש: {user_display}\n"
                     f"🆔 {self._from_user}\n"
-                    f"📁 קובץ: {filename}"
+                    f"📁 קובץ: {filename}\n"
+                    f"🔗 קישור: {self._url}"
                 )
                 
-                logging.info("Attempting to copy message %s to channel %s with custom caption", msg_id, ARCHIVE_CHANNEL)
+                # Check if this is a media group (multiple files)
+                media_group_id = getattr(success, 'media_group_id', None)
                 
-                # Copy message with new caption (overriding the original one with the link)
-                self._client.copy_message(
-                    chat_id=ARCHIVE_CHANNEL,
-                    from_chat_id=self._chat_id,
-                    message_id=msg_id,
-                    caption=archive_caption
-                )
-                logging.info("Forwarded to archive channel: %s", ARCHIVE_CHANNEL)
+                if media_group_id and len(files) > 1:
+                    # For media groups, send files directly to archive channel
+                    logging.info("Sending media group (%d files) to archive channel", len(files))
+                    archive_inputs = generate_input_media([str(f) for f in files], archive_caption)
+                    self._client.send_media_group(chat_id=ARCHIVE_CHANNEL, media=archive_inputs)
+                    logging.info("Sent media group to archive channel: %s", ARCHIVE_CHANNEL)
+                else:
+                    # Single file - copy message with new caption
+                    logging.info("Attempting to copy message %s to channel %s with custom caption", msg_id, ARCHIVE_CHANNEL)
+                    self._client.copy_message(
+                        chat_id=ARCHIVE_CHANNEL,
+                        from_chat_id=self._chat_id,
+                        message_id=msg_id,
+                        caption=archive_caption
+                    )
+                    logging.info("Forwarded to archive channel: %s", ARCHIVE_CHANNEL)
             except Exception as e:
                 logging.error("Failed to forward to archive channel: %s", e)
         
