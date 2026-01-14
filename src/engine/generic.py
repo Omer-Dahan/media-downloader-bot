@@ -10,6 +10,7 @@ from config import AUDIO_FORMAT, ARCHIVE_CHANNEL, ENABLE_ARIA2
 from utils import is_youtube
 from database.model import get_format_settings, get_quality_settings
 from engine.base import BaseDownloader
+from engine.network_errors import NetworkError, is_network_error, YTDLP_NETWORK_PATTERNS
 
 # Get absolute path to cookies file (relative to src directory)
 _SCRIPT_DIR = Path(__file__).parent.parent
@@ -386,6 +387,8 @@ class YoutubeDownload(BaseDownloader):
             ydl_opts["external_downloader_args"] = {
                 "aria2c": ["-x16", "-s16", "-k1M", "--max-tries=3", "--retry-wait=3"]
             }
+            # Show progress message since aria2 doesn't trigger yt-dlp progress hooks
+            self.edit_text("⚡ הקישור נקלט! מוריד במהירות גבוהה...")
         else:
             if is_youtube(self._url):
                 logging.info("[DOWNLOAD METHOD: yt-dlp] Using built-in downloader (YouTube fragmented stream)")
@@ -437,6 +440,18 @@ class YoutubeDownload(BaseDownloader):
                     logging.info("Download cancelled by user, stopping format attempts")
                     raise
                 logging.warning("Format %s failed: %s, trying next...", f, e)
+                # Check if this is a network error - stop trying and show resume button
+                if is_network_error(e):
+                    # Get partial file size if any
+                    partial_files = list(Path(self._tempdir.name).glob("*.part"))
+                    partial_bytes = sum(p.stat().st_size for p in partial_files) if partial_files else 0
+                    raise NetworkError(
+                        url=self._url,
+                        downloaded_bytes=partial_bytes,
+                        total_bytes=0,
+                        quality=self._selected_quality if hasattr(self, '_selected_quality') else None,
+                        original_error=e
+                    ) from e
                 # Check if this is an extraction error
                 if is_extraction_error(last_error):
                     extraction_error_encountered = True
@@ -470,6 +485,15 @@ class YoutubeDownload(BaseDownloader):
             if not files:
                 raise ValueError("ההורדה נכשלה - לא נמצאו פורמטים זמינים. נסה לעדכן את yt-dlp.")
             self._upload()
+        except NetworkError as e:
+            # Network error - show resume button
+            logging.warning("Network error during YouTube download: %s", e)
+            self.edit_text_with_resume_button(
+                downloaded_bytes=e.downloaded_bytes,
+                total_bytes=e.total_bytes,
+                quality=e.quality,
+                download_type="youtube"
+            )
         except ValueError as e:
             # Check if this is a cancellation
             if "בוטלה" in str(e):

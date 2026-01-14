@@ -41,7 +41,7 @@ from database.model import (
     set_user_settings,
 )
 from engine import direct_entrance, youtube_entrance, youtube_entrance_with_quality, get_youtube_video_info, special_download_entrance
-from engine.base import cancellation_events
+from engine.base import cancellation_events, _resume_state_cache
 from engine.generic import check_and_send_update_notification
 from utils import extract_url_and_name, sizeof_fmt, timeof_fmt, is_youtube
 from admin import admin_panel_command, admin_callback_handler, admin_text_handler, _admin_state
@@ -780,6 +780,60 @@ def cancel_callback(client: Client, callback_query: types.CallbackQuery):
     cancellation_events.add(key)
     
     callback_query.answer("🛑 מבטל...")
+
+
+@app.on_callback_query(filters.regex(r"^resume:"))
+def resume_callback(client: Client, callback_query: types.CallbackQuery):
+    """טיפול בכפתור המשך הורדה."""
+    data = callback_query.data
+    
+    # Parse callback data: resume:state_hash
+    parts = data.split(":")
+    if len(parts) != 2:
+        callback_query.answer("❌ שגיאה בעיבוד הבקשה", show_alert=True)
+        return
+    
+    _, state_hash = parts
+    
+    # Get resume state from cache
+    resume_state = _resume_state_cache.pop(state_hash, None)
+    if not resume_state:
+        callback_query.answer("❌ הבקשה פגה תוקף, נא לשלוח שוב", show_alert=True)
+        return
+    
+    url = resume_state.get("url")
+    download_type = resume_state.get("download_type", "generic")
+    quality = resume_state.get("quality")
+    
+    callback_query.answer("⏳ ממשיך הורדה...")
+    
+    try:
+        callback_query.message.edit_text("🔄 ממשיך הורדה...")
+    except Exception as e:
+        logging.error("Failed to edit resume message: %s", e)
+    
+    try:
+        chat_id = resume_state.get("chat_id")
+        client.send_chat_action(chat_id, enums.ChatAction.UPLOAD_VIDEO)
+        
+        if download_type == "direct":
+            direct_entrance(client, callback_query.message, url)
+        elif download_type == "youtube":
+            if quality and quality not in ['high', 'medium', 'low']:
+                # Specific quality like '1080', '720', etc.
+                youtube_entrance_with_quality(client, callback_query.message, url, quality)
+            else:
+                youtube_entrance(client, callback_query.message, url)
+        else:
+            # Try special handlers first, then fall back to yt-dlp
+            try:
+                special_download_entrance(client, callback_query.message, url)
+            except ValueError as inner_e:
+                if "לא נמצא מוריד" in str(inner_e):
+                    youtube_entrance(client, callback_query.message, url)
+    except Exception as e:
+        logging.error("Resume download failed", exc_info=True)
+        callback_query.message.edit_text(f"❌ המשך ההורדה נכשל: {e}")
 
 
 if __name__ == "__main__":

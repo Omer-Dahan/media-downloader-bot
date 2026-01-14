@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from config import ENABLE_ARIA2, TMPFILE_PATH
 from engine.base import BaseDownloader
+from engine.network_errors import NetworkError, is_network_error
 
 # Common User-Agent to avoid being blocked by servers
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
@@ -155,6 +156,19 @@ class DirectDownload(BaseDownloader):
             except HTTPError as e:
                 raise ValueError(f"ההורדה נכשלה: {e.response.status_code} - {e.response.reason}") from e
             except requests.exceptions.RequestException as e:
+                # Check if this is a network error
+                if is_network_error(e):
+                    # Get partial file size
+                    partial_bytes = 0
+                    if 'file' in dir() and file.exists():
+                        partial_bytes = file.stat().st_size
+                    raise NetworkError(
+                        url=self._url,
+                        downloaded_bytes=partial_bytes,
+                        total_bytes=total_size if 'total_size' in dir() else 0,
+                        partial_file_path=str(file) if 'file' in dir() else None,
+                        original_error=e
+                    ) from e
                 raise ValueError(f"שגיאת חיבור: {e}") from e
         
         # Detect file type and rename with proper extension
@@ -298,6 +312,15 @@ class DirectDownload(BaseDownloader):
         try:
             downloaded_files = self._download()
             self._upload(files=downloaded_files)
+        except NetworkError as e:
+            # Network error - show resume button
+            logging.warning("Network error during download: %s", e)
+            self.edit_text_with_resume_button(
+                downloaded_bytes=e.downloaded_bytes,
+                total_bytes=e.total_bytes,
+                partial_file=e.partial_file_path,
+                download_type="direct"
+            )
         except ValueError as e:
             # Check if this is a cancellation
             if "בוטלה" in str(e):

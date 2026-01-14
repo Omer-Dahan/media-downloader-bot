@@ -29,8 +29,12 @@ from database.model import (
     use_quota,
 )
 from engine.helper import debounce, sizeof_fmt
+from engine.network_errors import NetworkError, is_network_error, format_network_error_message
 
 cancellation_events = set()
+
+# Global storage for resume state (maps state_hash to resume info)
+_resume_state_cache: dict[str, dict] = {}
 
 
 def generate_input_media(file_paths: list, cap: str) -> list:
@@ -160,6 +164,50 @@ class BaseDownloader(ABC):
     @abstractmethod
     def _setup_formats(self) -> list | None:
         pass
+
+    def edit_text_with_resume_button(self, downloaded_bytes: int = 0, total_bytes: int = 0, 
+                                      quality: str = None, partial_file: str = None,
+                                      download_type: str = "generic"):
+        """Display network error message with a resume download button.
+        
+        Args:
+            downloaded_bytes: Number of bytes downloaded before error
+            total_bytes: Total expected bytes
+            quality: Quality setting (for YouTube)
+            partial_file: Path to partial download file
+            download_type: Type of download (direct/youtube/special)
+        """
+        import hashlib
+        
+        # Create resume state
+        state_hash = hashlib.md5(f"{self._url}:{self._chat_id}:{self._id}".encode()).hexdigest()[:8]
+        
+        _resume_state_cache[state_hash] = {
+            "url": self._url,
+            "chat_id": self._chat_id,
+            "from_user": self._from_user,
+            "message_id": self._id,
+            "downloaded_bytes": downloaded_bytes,
+            "total_bytes": total_bytes,
+            "quality": quality or self._quality,
+            "format": self._format,
+            "partial_file": partial_file,
+            "download_type": download_type,
+            "tempdir": self._tempdir.name if hasattr(self, '_tempdir') else None,
+        }
+        
+        # Format error message
+        text = format_network_error_message(downloaded_bytes, total_bytes)
+        
+        # Create resume button
+        markup = types.InlineKeyboardMarkup([
+            [types.InlineKeyboardButton("▶️ המשך הורדה", callback_data=f"resume:{state_hash}")],
+        ])
+        
+        try:
+            self._bot_msg.edit_text(text, reply_markup=markup)
+        except Exception as e:
+            logging.error("Failed to show resume button: %s", e)
 
     @abstractmethod
     def _download(self, formats) -> list:
