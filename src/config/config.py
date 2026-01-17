@@ -42,6 +42,7 @@ ARCHIVE_CHANNEL = int(get_env("ARCHIVE_CHANNEL")) if get_env("ARCHIVE_CHANNEL") 
 # For advance users
 # Please do not change, if you don't know what these are.
 TG_NORMAL_MAX_SIZE = 2000 * 1024 * 1024
+MAX_DOWNLOAD_SIZE = 4 * 1024 * 1024 * 1024  # 4GB - maximum allowed download
 CAPTION_URL_LENGTH_LIMIT = 150
 
 # This will set the value for the tmpfile path(engine path). If not, will return None and use system’s default path.

@@ -29,7 +29,7 @@ from config import (
     BotText,
 )
 from database.model import (
-    add_paid_quota,
+    check_quota,
     credit_account,
     get_format_settings,
     get_free_quota,
@@ -40,6 +40,8 @@ from database.model import (
     init_user,
     reset_free,
     set_user_settings,
+    CreditsExhaustedException,
+    get_total_credits,
 )
 from engine import direct_entrance, youtube_entrance, youtube_entrance_with_quality, get_youtube_video_info, special_download_entrance
 from engine.base import cancellation_events, _resume_state_cache
@@ -70,6 +72,9 @@ app = create_app("main")
 
 
 def report_error_to_archive(client: Client, user: types.User, url: str, error: Exception | str):
+    import html
+    from engine.request_logger import get_request_log
+    
     if not ARCHIVE_CHANNEL:
         return
     
@@ -82,19 +87,42 @@ def report_error_to_archive(client: Client, user: types.User, url: str, error: E
             if name:
                 user_display = name
         
+        # Get and escape log content
+        log_content = get_request_log()
+        log_escaped = html.escape(log_content) if log_content else "אין לוג זמין"
+        
+        # Handle 4096 char limit - leave room for header (~500 chars)
+        MAX_LOG_LEN = 3000
+        send_log_as_file = False
+        if len(log_escaped) > MAX_LOG_LEN:
+            log_display = log_escaped[:MAX_LOG_LEN] + "\n... (נקטע, ראה קובץ מצורף)"
+            send_log_as_file = True
+        else:
+            log_display = log_escaped
+        
         caption = (
-            f"❌ **דיווח שגיאה**\n"
-            f"👤 משתמש: {user_display}\n"
+            f"❌ <b>דיווח שגיאה</b>\n"
+            f"👤 משתמש: {html.escape(user_display)}\n"
             f"🆔 {user.id}\n"
-            f"🔗 קישור: {url}\n"
-            f"⚠️ שגיאה: {str(error)}"
+            f"🔗 קישור: {html.escape(url)}\n"
+            f"⚠️ שגיאה: {html.escape(str(error))}\n\n"
+            f"<blockquote expandable>📋 לוג מפורט:\n<pre>{log_display}</pre></blockquote>"
         )
         
         client.send_message(
             chat_id=ARCHIVE_CHANNEL,
             text=caption,
+            parse_mode=enums.ParseMode.HTML,
             disable_web_page_preview=True
         )
+        
+        # Send full log as file if truncated
+        if send_log_as_file and log_content:
+            f = BytesIO(log_content.encode('utf-8'))
+            f.name = f"error_log_{user.id}.txt"
+            client.send_document(ARCHIVE_CHANNEL, f)
+            f.close()
+            
     except Exception as e:
         logging.error("Failed to report error to archive channel: %s", e)
 
@@ -194,14 +222,23 @@ def ping_handler(client: Client, message: types.Message):
 
 @app.on_message(filters.command(["buy"]))
 def buy(client: Client, message: types.Message):
-    buy_text = """😊 לפני שממשיכים,
-לכל משתמש יש מכסת הורדות יומית כדי שהבוט יישאר מהיר וזמין לכולם.
-רוצים להוריד יותר?
-שלחו לי הודעה פרטית ואפתח לכם גישה מורחבת בתשלום קטן. 🚀💬"""
+    buy_text = """💳 **מערכת הקרדיטים**
+
+**איך זה עובד?**
+• כל **200MB** עולה **קרדיט 1**
+• קובץ 400MB = **2 קרדיטים**
+• קובץ 1GB = **5 קרדיטים**
+• פלייליסט מחויב לפי גודל הקבצים
+
+**מה קורה כשנגמרים?**
+הקרדיטים שלכם לא מתאפסים - הם נשארים עד שתרכשו עוד!
+
+💬 **לרכישת קרדיטים נוספים:**
+שלחו לי הודעה פרטית ואפתח לכם גישה בתשלום קטן 🚀"""
     
     markup = types.InlineKeyboardMarkup(
         [
-            [types.InlineKeyboardButton("לצ'אט איתי 💬", url="https://t.me/YD_IL")],
+            [types.InlineKeyboardButton("לרכישת קרדיטים 💬", url="https://t.me/YD_IL")],
         ]
     )
     message.reply_text(buy_text, reply_markup=markup)
@@ -426,23 +463,35 @@ def ytdl_handler(client: Client, message: types.Message):
 
 
 def check_link(url: str, uid: int = None):
-    ytdl = yt_dlp.YoutubeDL()
-    if re.findall(r"^https://www\.youtube\.com/channel/", url) or "list" in url:
-        # Check if user has paid quota - only paid users can download playlists
+    if re.findall(r"^https://(www\.)?youtube\.com/channel/", url) or "list" in url:
+        # Playlist/channel allowed for all users with credits
         if uid is not None:
-            paid = get_paid_quota(uid)
-            if paid and paid > 5:
-                return None  # Allow playlist download for paid users
-        # Return special marker for playlist/channel blocked - the handler will show button
-        return "PLAYLIST_BLOCKED"
+            total_credits = get_total_credits(uid)
+            if total_credits and total_credits >= 1:
+                return None  # Allow playlist download
+        # No credits - return block marker
+        return "PLAYLIST_NO_CREDITS"
 
     if not M3U8_SUPPORT and (re.findall(r"m3u8|\.m3u8|\.m3u$", url.lower())):
         return "קישורי m3u8 מושבתים."
 
+def send_no_credits_message(message: types.Message):
+    """Send credits exhausted message with purchase button."""
+    markup = types.InlineKeyboardMarkup([
+        [types.InlineKeyboardButton("💬 לרכישת קרדיטים", url="https://t.me/YD_IL")]
+    ])
+    message.reply_text(
+        "❌ **הקרדיטים שלך נגמרו.**\n\n"
+        "לרכישת קרדיטים נוספים, צור קשר עם יוצר הבוט. 👇",
+        reply_markup=markup,
+        quote=True
+    )
 
 @app.on_message(filters.incoming & filters.text)
 @private_use
 def download_handler(client: Client, message: types.Message):
+    from engine.request_logger import start_request_log, end_request_log
+    
     chat_id = message.from_user.id
     user = message.from_user
     init_user(chat_id, first_name=user.first_name if user else None, username=user.username if user else None)
@@ -470,22 +519,16 @@ def download_handler(client: Client, message: types.Message):
     
     client.send_chat_action(chat_id, enums.ChatAction.TYPING)
     logging.info("start %s", url)
+    
+    # Start request logging
+    start_request_log(url, chat_id)
 
     try:
         link_check_result = check_link(url, chat_id)
         
-        # Handle playlist/channel blocked for non-paid users
-        if link_check_result == "PLAYLIST_BLOCKED":
-            markup = types.InlineKeyboardMarkup([
-                [types.InlineKeyboardButton("💬 צור קשר לגישה מורחבת", url="https://t.me/YD_IL")]
-            ])
-            message.reply_text(
-                "🎵 **הורדת פלייליסט או ערוץ**\n\n"
-                "פיצ'ר זה זמין למשתמשים עם מנוי בלבד.\n"
-                "רוצה גישה? צור איתי קשר! 👇",
-                reply_markup=markup,
-                quote=True
-            )
+        # Handle playlist/channel - check credits
+        if link_check_result == "PLAYLIST_NO_CREDITS":
+            send_no_credits_message(message)
             return
         elif link_check_result:
             # Other error messages (like m3u8 disabled)
@@ -555,13 +598,22 @@ def download_handler(client: Client, message: types.Message):
         f.close()
         client.send_message(OWNER, f"המתנת הצפה! 🙁 {e} שניות....")
         time.sleep(e.value)
+    except CreditsExhaustedException:
+        # User has no credits - show purchase message
+        send_no_credits_message(message)
     except ValueError as e:
         report_error_to_archive(client, message.from_user, url, e)
-        message.reply_text(e.__str__(), quote=True)
+        message.reply_text(str(e), quote=True)
     except Exception as e:
         report_error_to_archive(client, message.from_user, url, e)
         logging.error("Download failed", exc_info=True)
-        message.reply_text(f"❌ ההורדה נכשלה: {e}", quote=True)
+        message.reply_text(
+            "❌ לא הצלחתי להוריד את הקישור הזה כרגע.\n"
+            "נסה שוב עוד מעט או שלח קישור אחר.",
+            quote=True
+        )
+    finally:
+        end_request_log()
 
 
 def _build_settings_markup(chat_id):
@@ -705,6 +757,8 @@ def toggle_title_length_callback(client: Client, callback_query: types.CallbackQ
 @app.on_callback_query(filters.regex(r"^ytq:"))
 def youtube_quality_callback(client: Client, callback_query: types.CallbackQuery):
     """Handle YouTube quality selection callback."""
+    from engine.request_logger import start_request_log, end_request_log
+    
     chat_id = callback_query.message.chat.id
     data = callback_query.data
     
@@ -747,13 +801,34 @@ def youtube_quality_callback(client: Client, callback_query: types.CallbackQuery
     except Exception as e:
         logging.error("Failed to edit message: %s", e)
     
+    # Start request logging
+    start_request_log(url, chat_id)
+    
     # Start download with selected quality
     try:
         client.send_chat_action(chat_id, enums.ChatAction.UPLOAD_VIDEO)
         youtube_entrance_with_quality(client, callback_query.message, url, quality)
+    except CreditsExhaustedException:
+        # User has no credits - show purchase message with button
+        markup = types.InlineKeyboardMarkup([
+            [types.InlineKeyboardButton("💬 לרכישת קרדיטים", url="https://t.me/YD_IL")]
+        ])
+        callback_query.message.edit_text(
+            "❌ הקרדיטים שלך נגמרו.\n"
+            "לרכישת קרדיטים נוספים, צור קשר עם יוצר הבוט. 👇",
+            reply_markup=markup
+        )
     except Exception as e:
+        # Get user for error reporting
+        user = callback_query.from_user
+        report_error_to_archive(client, user, url, e)
         logging.error("Download failed", exc_info=True)
-        callback_query.message.edit_text(f"❌ ההורדה נכשלה: {e}")
+        callback_query.message.edit_text(
+            "❌ לא הצלחתי להוריד את הקישור הזה כרגע.\n"
+            "נסה שוב עוד מעט או שלח קישור אחר."
+        )
+    finally:
+        end_request_log()
 
 
 @app.on_callback_query(filters.regex(r"^cancel:"))
@@ -776,6 +851,8 @@ def cancel_callback(client: Client, callback_query: types.CallbackQuery):
 @app.on_callback_query(filters.regex(r"^resume:"))
 def resume_callback(client: Client, callback_query: types.CallbackQuery):
     """טיפול בכפתור המשך הורדה."""
+    from engine.request_logger import start_request_log, end_request_log
+    
     data = callback_query.data
     
     # Parse callback data: resume:state_hash
@@ -795,6 +872,7 @@ def resume_callback(client: Client, callback_query: types.CallbackQuery):
     url = resume_state.get("url")
     download_type = resume_state.get("download_type", "generic")
     quality = resume_state.get("quality")
+    chat_id = resume_state.get("chat_id")
     
     callback_query.answer("⏳ ממשיך הורדה...")
     
@@ -803,8 +881,10 @@ def resume_callback(client: Client, callback_query: types.CallbackQuery):
     except Exception as e:
         logging.error("Failed to edit resume message: %s", e)
     
+    # Start request logging
+    start_request_log(url, chat_id)
+    
     try:
-        chat_id = resume_state.get("chat_id")
         client.send_chat_action(chat_id, enums.ChatAction.UPLOAD_VIDEO)
         
         if download_type == "direct":
@@ -823,14 +903,22 @@ def resume_callback(client: Client, callback_query: types.CallbackQuery):
                 if "לא נמצא מוריד" in str(inner_e):
                     youtube_entrance(client, callback_query.message, url)
     except Exception as e:
+        user = callback_query.from_user
+        report_error_to_archive(client, user, url, e)
         logging.error("Resume download failed", exc_info=True)
-        callback_query.message.edit_text(f"❌ המשך ההורדה נכשל: {e}")
+        callback_query.message.edit_text(
+            "❌ לא הצלחתי להמשיך את ההורדה כרגע.\n"
+            "נסה שוב עוד מעט או שלח קישור אחר."
+        )
+    finally:
+        end_request_log()
 
 
 if __name__ == "__main__":
     botStartTime = time.time()
     scheduler = BackgroundScheduler()
-    scheduler.add_job(reset_free, "cron", hour=0, minute=0)
+    # Daily reset removed - credits are now persistent
+    # scheduler.add_job(reset_free, "cron", hour=0, minute=0)
     scheduler.start()
     banner = f"""
 ▌ ▌         ▀▛▘     ▌       ▛▀▖              ▜            ▌

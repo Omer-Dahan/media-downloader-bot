@@ -15,7 +15,7 @@ import filetype
 from pyrogram import enums, types
 from tqdm import tqdm
 
-from config import TG_NORMAL_MAX_SIZE, Types, ARCHIVE_CHANNEL
+from config import TG_NORMAL_MAX_SIZE, MAX_DOWNLOAD_SIZE, Types, ARCHIVE_CHANNEL
 from database import Redis
 from database.model import (
     add_bandwidth_used,
@@ -28,6 +28,9 @@ from database.model import (
     get_title_length_settings,
     get_user_stats,
     use_quota,
+    use_quota_dynamic,
+    get_total_credits,
+    CreditsExhaustedException,
 )
 from engine.helper import debounce, sizeof_fmt
 from engine.network_errors import NetworkError, is_network_error, format_network_error_message
@@ -51,7 +54,8 @@ def generate_input_media(file_paths: list, cap: str) -> list:
         else:
             input_media.append(types.InputMediaDocument(media=path))
 
-    input_media[0].caption = cap
+    # Attach caption to LAST file in playlist (not first)
+    input_media[-1].caption = cap
     return input_media
 
 
@@ -77,15 +81,31 @@ class BaseDownloader(ABC):
     def __del__(self):
         self._tempdir.cleanup()
 
-    def _record_usage(self, file_size: int = 0):
+    def _record_usage(self, file_sizes: list[int] | int = 0) -> int:
+        """Record usage and deduct credits based on file sizes.
+        
+        Args:
+            file_sizes: List of file sizes in bytes, or single file size, or 0
+        
+        Returns:
+            Remaining credits after deduction
+        """
         free, paid = get_free_quota(self._from_user), get_paid_quota(self._from_user)
         logging.info("User %s has %s free and %s paid quota", self._from_user, free, paid)
         if free + paid < 0:
             raise Exception("חריגה ממכסת השימוש")
 
-        use_quota(self._from_user)
-        if file_size > 0:
-            add_bandwidth_used(self._from_user, file_size)
+        remaining = use_quota_dynamic(self._from_user, file_sizes)
+        
+        # Calculate total size for bandwidth tracking
+        if isinstance(file_sizes, list):
+            total_size = sum(file_sizes)
+        else:
+            total_size = file_sizes
+        
+        if total_size > 0:
+            add_bandwidth_used(self._from_user, total_size)
+        return remaining
 
     @staticmethod
     def __remove_bash_color(text):
@@ -131,8 +151,9 @@ class BaseDownloader(ABC):
             downloaded = d.get("downloaded_bytes", 0)
             total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
 
-            if total > TG_NORMAL_MAX_SIZE:
-                msg = f"גודל הקובץ {sizeof_fmt(total)} גדול מדי עבור טלגרם."
+            # Only block files over 4GB - files between 2-4GB will be split later
+            if total > MAX_DOWNLOAD_SIZE:
+                msg = f"גודל הקובץ {sizeof_fmt(total)} גדול מדי (מקסימום 4GB)"
                 raise Exception(msg)
 
             # percent = remove_bash_color(d.get("_percent_str", "N/A"))
@@ -282,6 +303,9 @@ class BaseDownloader(ABC):
             video_path = media_files[0]
         
         filename = Path(video_path).name if video_path else "unknown"
+        file_ext = Path(video_path).suffix.lower() if video_path else ""
+        is_audio = file_ext in audio_extensions
+        
         width = height = duration = 0
         try:
             video_streams = ffmpeg.probe(video_path, select_streams="v")
@@ -292,14 +316,20 @@ class BaseDownloader(ABC):
         except Exception as e:
             logging.error("Error while getting metadata: %s", e)
         try:
-            thumb = Path(video_path).parent.joinpath(f"{uuid.uuid4().hex}-thunmnail.png").as_posix()
+            thumb_path = Path(video_path).parent.joinpath(f"{uuid.uuid4().hex}-thumbnail.png")
+            thumb = thumb_path.as_posix()
             # A thumbnail's width and height should not exceed 320 pixels.
             ffmpeg.input(video_path, ss=duration / 2).filter(
                 "scale",
                 "if(gt(iw,ih),300,-1)",  # If width > height, scale width to 320 and height auto
                 "if(gt(iw,ih),-1,300)",
             ).output(thumb, vframes=1).run()
-        except ffmpeg._run.Error:
+            # Verify thumbnail was created and is valid (at least 100 bytes)
+            if not thumb_path.exists() or thumb_path.stat().st_size < 100:
+                logging.warning("Thumbnail file not created or too small, setting to None")
+                thumb = None
+        except ffmpeg._run.Error as e:
+            logging.warning("Failed to create thumbnail: %s", e)
             thumb = None
 
         # Format duration as minutes:seconds
@@ -315,12 +345,156 @@ class BaseDownloader(ABC):
             title = Path(video_path).stem if video_path else "Unknown"
             logging.info("get_metadata: Using filename as title: %s", title[:50])
         
-        caption = f"🎬 {title}\n\n🔗 מקור:\n{self._url}\n📐 רזולוציה: {width}x{height}\n⏱️ אורך: {duration_str}\n⬇️ הקובץ מוכן לצפייה והורדה\nצפייה מהנה 👀✨"
+        # Add remaining credits if available
+        credits_line = ""
+        if hasattr(self, '_remaining_credits') and self._remaining_credits is not None:
+            credits_line = f"\nקרדיטים נותרים: {self._remaining_credits} 💳"
+        
+        # Different caption for audio vs video
+        if is_audio:
+            caption = f"🎵 {title}\n\n🔗 מקור:\n{self._url}\n⏱️ אורך: {duration_str}\n⬇️ הקובץ מוכן להורדה{credits_line}\nשמיעה מהנה 🎧✨"
+        else:
+            caption = f"🎬 {title}\n\n🔗 מקור:\n{self._url}\n📐 רזולוציה: {width}x{height}\n⏱️ אורך: {duration_str}\n⬇️ הקובץ מוכן לצפייה והורדה{credits_line}\nצפייה מהנה 👀✨"
+        
         return dict(height=height, width=width, duration=duration, thumb=thumb, caption=caption)
+
+    def _split_video_if_needed(self, video_path: Path) -> list[Path]:
+        """Split video into ~1.9GB parts if larger than Telegram limit.
+        
+        Returns list of paths - original if small enough, or split parts.
+        """
+        import math
+        import subprocess
+        
+        file_size = video_path.stat().st_size
+        if file_size <= TG_NORMAL_MAX_SIZE:
+            return [video_path]
+        
+        logging.info("Video %s is %s, needs splitting", video_path.name, sizeof_fmt(file_size))
+        self.edit_text("⏳ הקובץ גדול מדי לטלגרם, מפצל לחלקים...")
+        
+        # Get video duration
+        try:
+            probe = ffmpeg.probe(str(video_path))
+            duration = float(probe['format']['duration'])
+        except Exception as e:
+            logging.error("Failed to probe video: %s", e)
+            raise ValueError(f"לא הצלחתי לקרוא את הסרטון: {e}")
+        
+        # Calculate number of parts (~1.9GB each to be safe)
+        target_size = 1.9 * 1024 * 1024 * 1024  # 1.9GB
+        num_parts = math.ceil(file_size / target_size)
+        part_duration = duration / num_parts
+        
+        logging.info("Splitting %s into %d parts, each ~%.1f seconds", video_path.name, num_parts, part_duration)
+        
+        parts = []
+        for i in range(num_parts):
+            start_time = i * part_duration
+            output_path = video_path.parent / f"{video_path.stem}_part{i+1}{video_path.suffix}"
+            
+            self.edit_text(f"⏳ מפצל חלק {i+1}/{num_parts}...")
+            
+            try:
+                # Use ffmpeg to split without re-encoding (fast)
+                (
+                    ffmpeg
+                    .input(str(video_path), ss=start_time, t=part_duration)
+                    .output(str(output_path), c='copy', avoid_negative_ts='make_zero')
+                    .overwrite_output()
+                    .run(quiet=True)
+                )
+                parts.append(output_path)
+                logging.info("Created part %d: %s (%s)", i+1, output_path.name, sizeof_fmt(output_path.stat().st_size))
+            except ffmpeg.Error as e:
+                logging.error("ffmpeg split failed: %s", e)
+                # Clean up any created parts
+                for p in parts:
+                    try:
+                        p.unlink()
+                    except:
+                        pass
+                raise ValueError(f"נכשל בפיצול הסרטון: {e}")
+        
+        # Remove original file to save space
+        try:
+            video_path.unlink()
+        except:
+            pass
+        
+        return parts
+    
+    def _upload_split_video(self, parts: list[Path], meta: dict):
+        """Upload split video parts with caption moving from first to last part.
+        
+        Flow:
+        1. First part gets full caption
+        2. After each next part uploads, previous part's caption is updated to just "חלק X/Y"
+        3. Last part keeps the full caption
+        """
+        num_parts = len(parts)
+        sent_messages = []  # Store sent message objects for editing later
+        
+        full_caption = meta.get("caption", "")
+        
+        for i, part_path in enumerate(parts):
+            part_num = i + 1
+            part_label = f"📎 חלק {part_num}/{num_parts}"
+            
+            self.edit_text(f"⬆️ מעלה חלק {part_num}/{num_parts}...")
+            
+            # First and middle parts: send with full caption initially
+            # After sending next part, we'll edit previous to just show part number
+            if part_num < num_parts:
+                current_caption = f"{part_label}\n\n{full_caption}"
+            else:
+                # Last part: full caption stays
+                current_caption = f"{part_label}\n\n{full_caption}"
+            
+            try:
+                msg = self._client.send_video(
+                    chat_id=self._chat_id,
+                    video=str(part_path),
+                    caption=current_caption,
+                    supports_streaming=True,
+                    progress=self.upload_hook,
+                    thumb=meta.get("thumb"),
+                    duration=meta.get("duration", 0) // num_parts,  # Approximate
+                    width=meta.get("width"),
+                    height=meta.get("height"),
+                )
+                sent_messages.append(msg)
+                logging.info("Sent part %d/%d: message_id=%s", part_num, num_parts, msg.id)
+                
+                # After sending this part (not the first), edit previous parts to show only part number
+                if part_num > 1:
+                    for prev_idx, prev_msg in enumerate(sent_messages[:-1]):
+                        prev_part_num = prev_idx + 1
+                        try:
+                            self._client.edit_message_caption(
+                                chat_id=self._chat_id,
+                                message_id=prev_msg.id,
+                                caption=f"📎 חלק {prev_part_num}/{num_parts}"
+                            )
+                        except Exception as e:
+                            logging.warning("Failed to edit caption for part %d: %s", prev_part_num, e)
+                
+            except Exception as e:
+                logging.error("Failed to send part %d: %s", part_num, e)
+                raise ValueError(f"נכשל בשליחת חלק {part_num}: {e}")
+            finally:
+                # Clean up part file
+                try:
+                    part_path.unlink()
+                except:
+                    pass
+        
+        return sent_messages[-1] if sent_messages else None
 
     def _upload(self, files=None, meta=None, skip_archive=False):
         if files is None:
-            files = list(Path(self._tempdir.name).glob("*"))
+            # Exclude .part files (incomplete downloads)
+            files = [f for f in Path(self._tempdir.name).glob("*") if not f.suffix.lower() == '.part']
         if meta is None:
             meta = self.get_metadata()
 
@@ -339,6 +513,29 @@ class BaseDownloader(ABC):
         # Use media files for main upload (if found)
         if media_files:
             files = media_files
+        
+        # Check if any video file is too large and needs splitting
+        video_files = [f for f in files if Path(f).suffix.lower() in video_extensions]
+        for video_file in video_files:
+            video_path = Path(video_file)
+            original_size = video_path.stat().st_size
+            if original_size > TG_NORMAL_MAX_SIZE:
+                # Video too large - split and upload
+                logging.info("Video %s exceeds Telegram limit, using split upload", video_path.name)
+                
+                # Record credits BEFORE splitting (based on original file size)
+                self._remaining_credits = self._record_usage(original_size)
+                
+                parts = self._split_video_if_needed(video_path)
+                if len(parts) > 1:
+                    # Use split upload flow
+                    success = self._upload_split_video(parts, meta)
+                    # Handle success message
+                    remaining_text = ""
+                    if hasattr(self, '_remaining_credits') and self._remaining_credits is not None:
+                        remaining_text = f" | קרדיטים נותרים: {self._remaining_credits}"
+                    self._bot_msg.edit_text(f"✅ הושלם בהצלחה - {len(parts)} חלקים{remaining_text}")
+                    return success
 
         success = SimpleNamespace(document=None, video=None, audio=None, animation=None, photo=None)
         if self._format == "document":
@@ -499,8 +696,11 @@ class BaseDownloader(ABC):
                 except Exception as e:
                     logging.error("Failed to send subtitle file %s: %s", sub_file, e)
         
-        # change progress bar to done
-        self._bot_msg.edit_text("✅ הושלם בהצלחה")
+        # change progress bar to done with remaining credits
+        remaining_text = ""
+        if hasattr(self, '_remaining_credits') and self._remaining_credits is not None:
+            remaining_text = f" | קרדיטים נותרים: {self._remaining_credits}"
+        self._bot_msg.edit_text(f"✅ הושלם בהצלחה{remaining_text}")
         return success
 
     def _get_video_cache(self):
@@ -515,19 +715,54 @@ class BaseDownloader(ABC):
     @final
     def start(self):
         check_quota(self._from_user)
+        self._remaining_credits = None  # Initialize
         if cache := self._get_video_cache():
             logging.info("Cache hit for %s", self._url)
             meta, file_id = json.loads(cache["meta"]), json.loads(cache["file_id"])
             meta["cache"] = True
+            # For cached files, still deduct credits (minimal cost)
+            self._remaining_credits = self._record_usage(0)
             self._upload(file_id, meta)
-            # For cached files, we still count bandwidth (estimated from file_id)
-            self._record_usage(0)  # Cache doesn't count towards bandwidth
         else:
             self._start()
-            # Calculate total file size from downloaded files
-            file_size = sum(f.stat().st_size for f in Path(self._tempdir.name).glob("*") if f.is_file())
-            self._record_usage(file_size)
+            # Calculate file sizes for each media file (for per-file credit charging)
+            media_extensions = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4v', '.mp3', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.flac'}
+            file_sizes = [f.stat().st_size for f in Path(self._tempdir.name).glob("*") if f.is_file() and f.suffix.lower() in media_extensions]
+            # Record usage BEFORE success message (which is now in _start->_upload)
+            # But since _start calls _upload, we need to record after and update message separately
+            self._remaining_credits = self._record_usage(file_sizes)
+            # Update the success message with remaining credits
+            try:
+                remaining_text = f" | קרדיטים נותרים: {self._remaining_credits}"
+                self._bot_msg.edit_text(f"✅ הושלם בהצלחה{remaining_text}")
+            except Exception:
+                pass  # Ignore edit errors
+        
+        # Send temporary notification with remaining credits (auto-delete after 5 seconds)
+        if self._remaining_credits is not None:
+            try:
+                import time
+                import threading
+                
+                notif_msg = self._client.send_message(
+                    chat_id=self._chat_id,
+                    text=f"💳 קרדיטים נותרים: {self._remaining_credits}",
+                    disable_notification=True
+                )
+                
+                # Delete notification after 5 seconds in background thread
+                def delete_notification():
+                    time.sleep(5)
+                    try:
+                        notif_msg.delete()
+                    except Exception:
+                        pass
+                
+                threading.Thread(target=delete_notification, daemon=True).start()
+            except Exception as e:
+                logging.warning("Failed to send credit notification: %s", e)
 
     @abstractmethod
     def _start(self):
         pass
+

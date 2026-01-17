@@ -199,6 +199,23 @@ def add_paid_quota(uid: int, amount: int):
             session.add(User(user_id=uid, paid=amount))
 
 
+def get_total_credits(uid: int) -> int:
+    """Get total available credits (free + paid) for a user."""
+    if not ENABLE_VIP:
+        return math.inf
+    
+    with session_manager() as session:
+        data = session.query(User).filter(User.user_id == uid).first()
+        if data:
+            return (data.free or 0) + (data.paid or 0)
+        return FREE_DOWNLOAD
+
+
+class CreditsExhaustedException(Exception):
+    """Raised when user has no credits remaining."""
+    pass
+
+
 def check_quota(uid: int):
     if not ENABLE_VIP:
         return
@@ -213,9 +230,9 @@ def check_quota(uid: int):
             # Check if user is blocked
             if data.is_blocked:
                 raise Exception("המשתמש שלך נחסם. פנה למנהל.")
-            # Check file count limit
+            # Check if credits are exhausted
             if (data.free + data.paid) <= 0:
-                raise Exception("הגעת למגבלת 5 קבצים ליום. אנא /buy או המתן עד מחר")
+                raise CreditsExhaustedException("הקרדיטים שלך נגמרו.")
             # Check bandwidth limit
             if data.bandwidth_used >= FREE_BANDWIDTH:
                 raise Exception("הגעת למגבלת 2GB ליום. אנא המתן עד מחר")
@@ -234,7 +251,54 @@ def use_quota(uid: int):
             elif user.paid > 0:
                 user.paid -= 1
             else:
-                raise Exception("המכסה נגמרה. אנא /buy או המתן עד לאיפוס המכסה החינמית")
+                raise CreditsExhaustedException("הקרדיטים שלך נגמרו.")
+
+
+def use_quota_dynamic(uid: int, file_sizes: list[int] | int) -> int:
+    """Deduct credits based on file sizes.
+    
+    Args:
+        uid: User ID
+        file_sizes: List of file sizes in bytes, or single file size for backwards compatibility
+        
+    Returns:
+        Remaining credits after deduction
+        
+    Deduction rules:
+        - 1 credit per 200MB (rounded up)
+        - Example: 400MB = 2 credits, 1GB = 5 credits
+    """
+    if not ENABLE_VIP:
+        return math.inf
+    
+    # Handle backwards compatibility - single int becomes list
+    if isinstance(file_sizes, int):
+        file_sizes = [file_sizes] if file_sizes > 0 else []
+    
+    # Calculate total size in MB
+    total_size_bytes = sum(file_sizes)
+    total_size_mb = total_size_bytes / (1024 * 1024)
+    
+    # 1 credit per 200MB, minimum 1 credit if any files
+    credits_to_deduct = max(1, math.ceil(total_size_mb / 200)) if file_sizes else 0
+    
+    with session_manager() as session:
+        user = session.query(User).filter(User.user_id == uid).first()
+        if user:
+            # Deduct from free first, then paid
+            for _ in range(credits_to_deduct):
+                if user.free > 0:
+                    user.free -= 1
+                elif user.paid > 0:
+                    user.paid -= 1
+                else:
+                    break  # No more credits to deduct
+            
+            remaining = (user.free or 0) + (user.paid or 0)
+            logging.info("User %s: deducted %d credits (%d files), remaining: %d", 
+                        uid, credits_to_deduct, len(file_sizes), remaining)
+            return remaining
+        return 0
 
 
 def init_user(uid: int, first_name: str = None, username: str = None):
@@ -251,12 +315,14 @@ def init_user(uid: int, first_name: str = None, username: str = None):
 
 
 def reset_free():
-    with session_manager() as session:
-        users = session.query(User).all()
-        for user in users:
-            user.free = FREE_DOWNLOAD
-            user.bandwidth_used = 0  # Reset bandwidth daily
-        session.commit()
+    """DEPRECATED: Daily reset removed. Credits are now persistent.
+    
+    This function is kept for backwards compatibility but does nothing.
+    Credit replenishment is now handled via manual admin action or purchase.
+    """
+    logging.info("reset_free() called but daily reset is disabled")
+    # Daily reset removed - credits are now persistent
+    pass
 
 
 def add_bandwidth_used(uid: int, size: int):

@@ -8,7 +8,7 @@ import yt_dlp
 
 from config import AUDIO_FORMAT, ARCHIVE_CHANNEL, ENABLE_ARIA2
 from utils import is_youtube
-from database.model import get_format_settings, get_quality_settings
+from database.model import get_format_settings, get_quality_settings, get_total_credits, CreditsExhaustedException
 from engine.base import BaseDownloader
 from engine.network_errors import NetworkError, is_network_error, YTDLP_NETWORK_PATTERNS
 
@@ -354,6 +354,7 @@ class YoutubeDownload(BaseDownloader):
 
     def _download(self, formats, _retry_after_update: bool = False, _use_aria2: bool = None) -> list:
         output = Path(self._tempdir.name, "%(title).70s.%(ext)s").as_posix()
+        
         ydl_opts = {
             "progress_hooks": [lambda d: self.download_hook(d)],
             "outtmpl": output,
@@ -370,7 +371,14 @@ class YoutubeDownload(BaseDownloader):
             "writethumbnail": True,
             # Ensure MP4 output for Telegram inline streaming support
             "merge_output_format": "mp4",
+            # Skip private/unavailable videos in playlists instead of failing
+            "ignoreerrors": True,
         }
+        
+        # Use pre-calculated playlist limit from _start (to avoid repeated DB queries)
+        if hasattr(self, '_max_playlist_items') and self._max_playlist_items is not None:
+            ydl_opts["playlistend"] = self._max_playlist_items
+            logging.info("Playlist limited to %d items based on credits", self._max_playlist_items)
         
         # Add subtitle options if user has subtitles enabled
         if self._subtitles:
@@ -440,14 +448,19 @@ class YoutubeDownload(BaseDownloader):
                         if title:
                             self._video_title = title[:500]
                             logging.info("Extracted title (%d chars): %s", len(title), title[:100] if len(title) > 100 else title)
-                files = list(Path(self._tempdir.name).glob("*"))
-                if files:  # Only break if we actually got files
+                # Get files but exclude .part files (incomplete downloads)
+                files = [f for f in Path(self._tempdir.name).glob("*") if not f.suffix.lower() == '.part']
+                if files:  # Only break if we actually got complete files
                     break
             except Exception as e:
                 last_error = str(e)
                 # Check if this is a cancellation - don't try next format, just stop
                 if "בוטלה" in last_error:
                     logging.info("Download cancelled by user, stopping format attempts")
+                    raise
+                # Check if file is too large for Telegram - don't try next format
+                if "גדול מדי" in last_error:
+                    logging.error("File too large for Telegram, stopping download")
                     raise
                 logging.warning("Format %s failed: %s, trying next...", f, e)
                 # Check if this is a network error - stop trying and show resume button
@@ -487,11 +500,27 @@ class YoutubeDownload(BaseDownloader):
         # start download and upload, no cache hit
         # user can choose format by clicking on the button(custom config)
         try:
+            # Check credits once at start (not in _download which may be called multiple times)
+            available_credits = get_total_credits(self._from_user)
+            if available_credits == 0:
+                raise CreditsExhaustedException("הקרדיטים שלך נגמרו.")
+            
+            # Store max items for playlist limiting (used in _download)
+            self._max_playlist_items = available_credits if available_credits != float('inf') else None
+            logging.info("User %s has %s credits, max playlist items: %s", 
+                        self._from_user, available_credits, self._max_playlist_items or 'unlimited')
+            
             default_formats = self._setup_formats()
             if formats is not None:
                 # formats according to user choice
                 default_formats = formats + self._setup_formats()
             files = self._download(default_formats)
+            
+            # Debug: log what files are in tempdir
+            all_files_in_temp = list(Path(self._tempdir.name).glob("*"))
+            logging.info("Files returned from _download: %s", files)
+            logging.info("All files in tempdir: %s", all_files_in_temp)
+            
             if not files:
                 raise ValueError("ההורדה נכשלה - לא נמצאו פורמטים זמינים. נסה לעדכן את yt-dlp.")
             self._upload()
