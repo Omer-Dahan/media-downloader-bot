@@ -36,6 +36,7 @@ from database.model import (
     get_paid_quota,
     get_quality_settings,
     get_subtitles_settings,
+    get_title_length_settings,
     init_user,
     reset_free,
     set_user_settings,
@@ -356,35 +357,8 @@ def settings_handler(client: Client, message: types.Message):
     init_user(chat_id)
     client.send_chat_action(chat_id, enums.ChatAction.TYPING)
     
-    # Get current subtitle setting to show correct button
-    subtitles_enabled = get_subtitles_settings(chat_id)
-    subtitle_button = types.InlineKeyboardButton(
-        "כתוביות: ✅" if subtitles_enabled else "כתוביות: ❌",
-        callback_data="subtitles_off" if subtitles_enabled else "subtitles_on"
-    )
-    
-    markup = types.InlineKeyboardMarkup(
-        [
-            [  # First row
-                types.InlineKeyboardButton("שלח כקובץ", callback_data="document"),
-                types.InlineKeyboardButton("שלח כוידאו", callback_data="video"),
-                types.InlineKeyboardButton("שלח כשמע", callback_data="audio"),
-            ],
-            [  # second row
-                types.InlineKeyboardButton("איכות גבוהה", callback_data="high"),
-                types.InlineKeyboardButton("איכות בינונית", callback_data="medium"),
-                types.InlineKeyboardButton("איכות נמוכה", callback_data="low"),
-            ],
-            [  # third row - subtitles toggle
-                subtitle_button,
-            ],
-        ]
-    )
-
-    quality = get_quality_settings(chat_id)
-    send_type = get_format_settings(chat_id)
-    subtitles_status = "מופעל ✅" if subtitles_enabled else "כבוי ❌"
-    client.send_message(chat_id, BotText.settings.format(quality, send_type, subtitles_status), reply_markup=markup)
+    markup = _build_settings_markup(chat_id)
+    client.send_message(chat_id, BotText.settings, reply_markup=markup)
 
 
 @app.on_message(filters.command(["direct"]))
@@ -590,125 +564,142 @@ def download_handler(client: Client, message: types.Message):
         message.reply_text(f"❌ ההורדה נכשלה: {e}", quote=True)
 
 
-@app.on_callback_query(filters.regex(r"^document$|^video$|^audio$"))
-def format_callback(client: Client, callback_query: types.CallbackQuery):
-    chat_id = callback_query.message.chat.id
-    data = callback_query.data
-    logging.info("Setting %s file type to %s", chat_id, data)
-    set_user_settings(chat_id, "format", data)
-    callback_query.answer(f"✅ סוג המשלוח שלך הוגדר ל-{data}")
+def _build_settings_markup(chat_id):
+    """Build toggle-style settings keyboard with current user settings."""
+    # Get current settings
+    quality = get_quality_settings(chat_id)  # returns 'high', 'medium', 'low'
+    send_format = get_format_settings(chat_id)  # returns 'video', 'document', 'audio'
+    subtitles_enabled = get_subtitles_settings(chat_id)  # returns True/False
+    title_length = get_title_length_settings(chat_id)  # returns 100, 250, 500, 1000
     
-    # Update the message with new settings
-    quality = get_quality_settings(chat_id)
-    send_type = get_format_settings(chat_id)
-    subtitles_enabled = get_subtitles_settings(chat_id)
-    subtitle_button = types.InlineKeyboardButton(
-        "כתוביות: ✅" if subtitles_enabled else "כתוביות: ❌",
-        callback_data="subtitles_off" if subtitles_enabled else "subtitles_on"
+    # Quality display mapping
+    quality_display = {
+        'high': '1080p',
+        'medium': '720p',
+        'low': '480p'
+    }
+    
+    # Format display mapping
+    format_display = {
+        'video': 'וידאו',
+        'document': 'קובץ',
+        'audio': 'שמע'
+    }
+    
+    # Build toggle buttons - each shows current state
+    quality_btn = types.InlineKeyboardButton(
+        f"🎥 איכות: {quality_display.get(quality, '1080p')}",
+        callback_data="toggle_quality"
     )
-    markup = types.InlineKeyboardMarkup(
+    
+    format_btn = types.InlineKeyboardButton(
+        f"📤 שליחה: {format_display.get(send_format, 'וידאו')}",
+        callback_data="toggle_format"
+    )
+    
+    subtitles_btn = types.InlineKeyboardButton(
+        f"📝 כתוביות: {'פעיל' if subtitles_enabled else 'כבוי'}",
+        callback_data="toggle_subtitles"
+    )
+    
+    title_btn = types.InlineKeyboardButton(
+        f"📑 אורך כותרת: {title_length}",
+        callback_data="toggle_title_len"
+    )
+    
+    return types.InlineKeyboardMarkup(
         [
-            [
-                types.InlineKeyboardButton("שלח כקובץ", callback_data="document"),
-                types.InlineKeyboardButton("שלח כוידאו", callback_data="video"),
-                types.InlineKeyboardButton("שלח כשמע", callback_data="audio"),
-            ],
-            [
-                types.InlineKeyboardButton("איכות גבוהה", callback_data="high"),
-                types.InlineKeyboardButton("איכות בינונית", callback_data="medium"),
-                types.InlineKeyboardButton("איכות נמוכה", callback_data="low"),
-            ],
-            [subtitle_button],
+            [quality_btn],
+            [format_btn],
+            [subtitles_btn],
+            [title_btn],
         ]
     )
-    subtitles_status = "מופעל ✅" if subtitles_enabled else "כבוי ❌"
-    try:
-        callback_query.message.edit_text(BotText.settings.format(quality, send_type, subtitles_status), reply_markup=markup)
-    except pyrogram.errors.MessageNotModified:
-        pass  # Ignore if message content unchanged
 
 
-@app.on_callback_query(filters.regex(r"^high$|^medium$|^low$"))
-def quality_callback(client: Client, callback_query: types.CallbackQuery):
+@app.on_callback_query(filters.regex(r"^toggle_quality$"))
+def toggle_quality_callback(client: Client, callback_query: types.CallbackQuery):
+    """Toggle quality: 1080p → 720p → 480p → 1080p"""
     chat_id = callback_query.message.chat.id
-    data = callback_query.data
-    logging.info("Setting %s download quality to %s", chat_id, data)
-    set_user_settings(chat_id, "quality", data)
-    callback_query.answer(f"✅ איכות ברירת המחדל שלך הוגדרה ל-{data}")
+    current = get_quality_settings(chat_id)
     
-    # Update the message with new settings
-    quality = get_quality_settings(chat_id)
-    send_type = get_format_settings(chat_id)
-    subtitles_enabled = get_subtitles_settings(chat_id)
-    subtitle_button = types.InlineKeyboardButton(
-        "כתוביות: ✅" if subtitles_enabled else "כתוביות: ❌",
-        callback_data="subtitles_off" if subtitles_enabled else "subtitles_on"
-    )
-    markup = types.InlineKeyboardMarkup(
-        [
-            [
-                types.InlineKeyboardButton("שלח כקובץ", callback_data="document"),
-                types.InlineKeyboardButton("שלח כוידאו", callback_data="video"),
-                types.InlineKeyboardButton("שלח כשמע", callback_data="audio"),
-            ],
-            [
-                types.InlineKeyboardButton("איכות גבוהה", callback_data="high"),
-                types.InlineKeyboardButton("איכות בינונית", callback_data="medium"),
-                types.InlineKeyboardButton("איכות נמוכה", callback_data="low"),
-            ],
-            [subtitle_button],
-        ]
-    )
-    subtitles_status = "מופעל ✅" if subtitles_enabled else "כבוי ❌"
+    # Cycle: high → medium → low → high
+    cycle = {'high': 'medium', 'medium': 'low', 'low': 'high'}
+    new_quality = cycle.get(current, 'high')
+    
+    display = {'high': '1080p', 'medium': '720p', 'low': '480p'}
+    
+    logging.info("Setting %s quality to %s", chat_id, new_quality)
+    set_user_settings(chat_id, "quality", new_quality)
+    callback_query.answer(f"✅ איכות: {display[new_quality]}")
+    
     try:
-        callback_query.message.edit_text(BotText.settings.format(quality, send_type, subtitles_status), reply_markup=markup)
+        callback_query.message.edit_text(BotText.settings, reply_markup=_build_settings_markup(chat_id))
     except pyrogram.errors.MessageNotModified:
-        pass  # Ignore if message content unchanged
+        pass
 
 
-@app.on_callback_query(filters.regex(r"^subtitles_on$|^subtitles_off$"))
-def subtitles_callback(client: Client, callback_query: types.CallbackQuery):
-    """Handle subtitles toggle callback."""
+@app.on_callback_query(filters.regex(r"^toggle_format$"))
+def toggle_format_callback(client: Client, callback_query: types.CallbackQuery):
+    """Toggle format: וידאו ↔ קובץ"""
     chat_id = callback_query.message.chat.id
-    data = callback_query.data
+    current = get_format_settings(chat_id)
     
-    # Set subtitles preference (1 for on, 0 for off)
-    new_value = 1 if data == "subtitles_on" else 0
+    # Toggle: video ↔ document
+    new_format = 'document' if current == 'video' else 'video'
+    display = {'video': 'וידאו', 'document': 'קובץ'}
+    
+    logging.info("Setting %s format to %s", chat_id, new_format)
+    set_user_settings(chat_id, "format", new_format)
+    callback_query.answer(f"✅ שליחה: {display[new_format]}")
+    
+    try:
+        callback_query.message.edit_text(BotText.settings, reply_markup=_build_settings_markup(chat_id))
+    except pyrogram.errors.MessageNotModified:
+        pass
+
+
+@app.on_callback_query(filters.regex(r"^toggle_subtitles$"))
+def toggle_subtitles_callback(client: Client, callback_query: types.CallbackQuery):
+    """Toggle subtitles: פעיל ↔ כבוי"""
+    chat_id = callback_query.message.chat.id
+    current = get_subtitles_settings(chat_id)
+    
+    # Toggle on/off
+    new_value = 0 if current else 1
+    
+    logging.info("Setting %s subtitles to %s", chat_id, new_value)
     set_user_settings(chat_id, "subtitles", new_value)
     
     if new_value:
-        callback_query.answer("✅ הורדת כתוביות הופעלה")
+        callback_query.answer("✅ כתוביות: פעיל")
     else:
-        callback_query.answer("❌ הורדת כתוביות כובתה")
+        callback_query.answer("❌ כתוביות: כבוי")
     
-    # Update the message with new settings
-    quality = get_quality_settings(chat_id)
-    send_type = get_format_settings(chat_id)
-    subtitles_enabled = bool(new_value)
-    subtitle_button = types.InlineKeyboardButton(
-        "כתוביות: ✅" if subtitles_enabled else "כתוביות: ❌",
-        callback_data="subtitles_off" if subtitles_enabled else "subtitles_on"
-    )
-    markup = types.InlineKeyboardMarkup(
-        [
-            [
-                types.InlineKeyboardButton("שלח כקובץ", callback_data="document"),
-                types.InlineKeyboardButton("שלח כוידאו", callback_data="video"),
-                types.InlineKeyboardButton("שלח כשמע", callback_data="audio"),
-            ],
-            [
-                types.InlineKeyboardButton("איכות גבוהה", callback_data="high"),
-                types.InlineKeyboardButton("איכות בינונית", callback_data="medium"),
-                types.InlineKeyboardButton("איכות נמוכה", callback_data="low"),
-            ],
-            [subtitle_button],
-        ]
-    )
-    subtitles_status = "מופעל ✅" if subtitles_enabled else "כבוי ❌"
     try:
-        callback_query.message.edit_text(BotText.settings.format(quality, send_type, subtitles_status), reply_markup=markup)
+        callback_query.message.edit_text(BotText.settings, reply_markup=_build_settings_markup(chat_id))
     except pyrogram.errors.MessageNotModified:
-        pass  # Ignore if message content unchanged
+        pass
+
+
+@app.on_callback_query(filters.regex(r"^toggle_title_len$"))
+def toggle_title_length_callback(client: Client, callback_query: types.CallbackQuery):
+    """Toggle title length: 1000 → 500 → 250 → 100 → 1000"""
+    chat_id = callback_query.message.chat.id
+    current = get_title_length_settings(chat_id)
+    
+    # Cycle: 1000 → 500 → 250 → 100 → 1000
+    cycle = {1000: 500, 500: 250, 250: 100, 100: 1000}
+    new_length = cycle.get(current, 1000)
+    
+    logging.info("Setting %s title_length to %s", chat_id, new_length)
+    set_user_settings(chat_id, "title_length", new_length)
+    callback_query.answer(f"✅ אורך כותרת: {new_length} תווים")
+    
+    try:
+        callback_query.message.edit_text(BotText.settings, reply_markup=_build_settings_markup(chat_id))
+    except pyrogram.errors.MessageNotModified:
+        pass
 
 
 @app.on_callback_query(filters.regex(r"^ytq:"))

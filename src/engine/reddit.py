@@ -52,6 +52,14 @@ class RedditDownload(BaseDownloader):
                 info = ydl.extract_info(url, download=True)
                 if info:
                     self._format = "video"
+                    # Get all possible title fields and choose the longest one
+                    title_field = info.get('title', '') or ''
+                    desc_field = info.get('description', '') or ''
+                    fulltitle_field = info.get('fulltitle', '') or ''
+                    title = max([title_field, desc_field, fulltitle_field], key=len)
+                    if title:
+                        self._video_title = title[:500]
+                        logging.info("Reddit: Extracted title (%d chars): %s", len(title), title[:100] if len(title) > 100 else title)
                     
             # Find downloaded files
             return [str(f) for f in pathlib.Path(self._tempdir.name).glob("*") if f.is_file()]

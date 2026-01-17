@@ -94,7 +94,26 @@ class TikTokDownload(BaseDownloader):
         try:
             logging.info("TikTok: Trying yt-dlp with URL: %s", url)
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([url])
+                # Use extract_info with download=True to get title and download in one operation
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    # Get all possible title fields
+                    title_field = info.get('title', '') or ''
+                    desc_field = info.get('description', '') or ''
+                    fulltitle_field = info.get('fulltitle', '') or ''
+                    
+                    # Debug: log available title fields
+                    logging.info("TikTok DEBUG: title len=%d, description len=%d, fulltitle len=%d", 
+                                len(title_field), len(desc_field), len(fulltitle_field))
+                    
+                    # Choose the longest one (description is usually the full text for TikTok)
+                    title = max([title_field, desc_field, fulltitle_field], key=len)
+                    
+                    if title:
+                        self._video_title = title[:500]
+                        logging.info("TikTok: Using longest title (%d chars): %s", len(title), title[:100])
+                    else:
+                        logging.warning("TikTok: No title found in info dict!")
 
             files = list(pathlib.Path(self._tempdir.name).glob("*"))
             if files:

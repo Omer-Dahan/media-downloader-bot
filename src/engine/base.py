@@ -25,6 +25,7 @@ from database.model import (
     get_paid_quota,
     get_quality_settings,
     get_subtitles_settings,
+    get_title_length_settings,
     get_user_stats,
     use_quota,
 )
@@ -70,6 +71,8 @@ class BaseDownloader(ABC):
         self._quality = get_quality_settings(self._chat_id)
         self._format = get_format_settings(self._chat_id)
         self._subtitles = get_subtitles_settings(self._chat_id)
+        self._title_length = get_title_length_settings(self._chat_id)  # Max chars for title in caption
+        self._video_title = None  # Full title for caption
 
     def __del__(self):
         self._tempdir.cleanup()
@@ -304,8 +307,13 @@ class BaseDownloader(ABC):
         duration_seconds = duration % 60
         duration_str = f"{duration_minutes}:{duration_seconds:02d} דקות"
         
-        # Extract title from filename (without extension)
-        title = Path(video_path).stem if video_path else "Unknown"
+        # Extract title: prefer stored full title, otherwise use filename
+        if self._video_title:
+            title = self._video_title[:self._title_length]  # Use user's preferred title length
+            logging.info("get_metadata: Using stored _video_title (%d chars, max=%d)", len(title), self._title_length)
+        else:
+            title = Path(video_path).stem if video_path else "Unknown"
+            logging.info("get_metadata: Using filename as title: %s", title[:50])
         
         caption = f"🎬 {title}\n\n🔗 מקור:\n{self._url}\n📐 רזולוציה: {width}x{height}\n⏱️ אורך: {duration_str}\n⬇️ הקובץ מוכן לצפייה והורדה\nצפייה מהנה 👀✨"
         return dict(height=height, width=width, duration=duration, thumb=thumb, caption=caption)

@@ -56,6 +56,7 @@ class Setting(Base):
     quality = Column(Enum("high", "medium", "low", "audio", "custom"), nullable=False, default="high")
     format = Column(Enum("video", "audio", "document"), nullable=False, default="video")
     subtitles = Column(Integer, nullable=False, default=0)  # 0 = off, 1 = on
+    title_length = Column(Integer, nullable=False, default=500)  # Max chars for caption title: 100, 250, 500, 1000
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     user = relationship("User", back_populates="settings")
@@ -134,6 +135,15 @@ def get_subtitles_settings(tgid) -> bool:
         if user and user.settings:
             return bool(user.settings.subtitles)
         return False
+
+
+def get_title_length_settings(tgid) -> int:
+    """Get user's preferred title length for captions."""
+    with session_manager() as session:
+        user = session.query(User).filter(User.user_id == tgid).first()
+        if user and user.settings and user.settings.title_length:
+            return user.settings.title_length
+        return 500  # Default to 500 chars
 
 
 def set_user_settings(tgid: int, key: str, value):

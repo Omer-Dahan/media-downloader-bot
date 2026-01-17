@@ -429,7 +429,17 @@ class YoutubeDownload(BaseDownloader):
                 ydl_opts["format"] = f
                 logging.info("yt-dlp options: %s", ydl_opts)
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([self._url])
+                    # Use extract_info with download=True to get title and download in one operation
+                    info = ydl.extract_info(self._url, download=True)
+                    if info:
+                        # Get all possible title fields and choose the longest one
+                        title_field = info.get('title', '') or ''
+                        desc_field = info.get('description', '') or ''
+                        fulltitle_field = info.get('fulltitle', '') or ''
+                        title = max([title_field, desc_field, fulltitle_field], key=len)
+                        if title:
+                            self._video_title = title[:500]
+                            logging.info("Extracted title (%d chars): %s", len(title), title[:100] if len(title) > 100 else title)
                 files = list(Path(self._tempdir.name).glob("*"))
                 if files:  # Only break if we actually got files
                     break
