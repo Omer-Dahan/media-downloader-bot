@@ -89,3 +89,19 @@ class Redis:
             return {}
         finally:
             session.close()
+    
+    def delete_cache(self, key: str) -> bool:
+        """Delete a cache entry by key."""
+        session = _get_session()
+        try:
+            deleted = session.query(VideoCache).filter(VideoCache.cache_key == key).delete()
+            session.commit()
+            if deleted:
+                logging.info("Cache deleted for key: %s", key[:16])
+            return deleted > 0
+        except Exception as e:
+            session.rollback()
+            logging.error("Failed to delete cache: %s", e)
+            return False
+        finally:
+            session.close()

@@ -164,7 +164,43 @@ class BaseDownloader(ABC):
 
     def upload_hook(self, current, total):
         self.check_for_cancel()
-        text = self.__tqdm_progress("מעלה...", total, current)
+        
+        import time
+        
+        # Initialize upload tracking on first call
+        if not hasattr(self, '_upload_start_time'):
+            self._upload_start_time = time.time()
+            self._upload_last_bytes = 0
+            self._upload_last_time = time.time()
+            self._upload_speed = 0
+        
+        now = time.time()
+        time_diff = now - self._upload_last_time
+        
+        # Update speed calculation every 0.5 seconds to smooth it out
+        if time_diff >= 0.5:
+            bytes_diff = current - self._upload_last_bytes
+            self._upload_speed = bytes_diff / time_diff if time_diff > 0 else 0
+            self._upload_last_bytes = current
+            self._upload_last_time = now
+        
+        # Calculate ETA
+        speed_str = ""
+        eta_str = ""
+        if self._upload_speed > 0:
+            speed_str = sizeof_fmt(self._upload_speed) + "/s"
+            remaining_bytes = total - current
+            eta_seconds = int(remaining_bytes / self._upload_speed)
+            if eta_seconds < 60:
+                eta_str = f"{eta_seconds} שניות"
+            elif eta_seconds < 3600:
+                eta_str = f"{eta_seconds // 60}:{eta_seconds % 60:02d} דקות"
+            else:
+                hours = eta_seconds // 3600
+                minutes = (eta_seconds % 3600) // 60
+                eta_str = f"{hours}:{minutes:02d} שעות"
+        
+        text = self.__tqdm_progress("מעלה...", total, current, speed_str, eta_str)
         self.edit_text(text)
 
     def check_for_cancel(self):
@@ -492,6 +528,16 @@ class BaseDownloader(ABC):
         return sent_messages[-1] if sent_messages else None
 
     def _upload(self, files=None, meta=None, skip_archive=False):
+        # Reset upload speed tracking for new upload
+        if hasattr(self, '_upload_start_time'):
+            del self._upload_start_time
+        if hasattr(self, '_upload_last_bytes'):
+            del self._upload_last_bytes
+        if hasattr(self, '_upload_last_time'):
+            del self._upload_last_time
+        if hasattr(self, '_upload_speed'):
+            del self._upload_speed
+            
         if files is None:
             # Exclude .part files (incomplete downloads)
             files = [f for f in Path(self._tempdir.name).glob("*") if not f.suffix.lower() == '.part']
@@ -580,6 +626,7 @@ class BaseDownloader(ABC):
             video_meta = meta.copy()
 
             upload_successful = False  # Flag to track if any method succeeded
+            cache_corrupted = False  # Track if this looks like a corrupted cache
             for method in attempt_methods:
                 current_meta = video_meta.copy()
 
@@ -613,9 +660,14 @@ class BaseDownloader(ABC):
                     break
                 except Exception as e:
                     logging.error("Retry to send as %s, error: %s", method, e)
+                    # Check for file type mismatch errors (indicates corrupted cache)
+                    if "file id instead" in str(e) or "Expected" in str(e):
+                        cache_corrupted = True
 
             # Check the flag after the loop
             if not upload_successful:
+                if cache_corrupted:
+                    raise ValueError("CACHE_CORRUPTED: Expected media file id, got wrong type")
                 raise ValueError("שגיאה: לקישורים ישירים, נסה שוב עם `/direct`.")
 
         else:
@@ -722,7 +774,16 @@ class BaseDownloader(ABC):
             meta["cache"] = True
             # For cached files, still deduct credits (minimal cost)
             self._remaining_credits = self._record_usage(0)
-            self._upload(file_id, meta)
+            try:
+                self._upload(file_id, meta)
+            except ValueError as e:
+                # Cache might be corrupted (wrong file type) - delete and retry fresh download
+                if "CACHE_CORRUPTED" in str(e):
+                    logging.warning("Corrupted cache detected, deleting and retrying: %s", e)
+                    self._redis.delete_cache(self._calc_video_key())
+                    self._start()
+                else:
+                    raise
         else:
             self._start()
             # Calculate file sizes for each media file (for per-file credit charging)

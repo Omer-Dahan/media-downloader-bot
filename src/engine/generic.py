@@ -396,7 +396,7 @@ class YoutubeDownload(BaseDownloader):
                 "aria2c": ["-x16", "-s16", "-k1M", "--max-tries=3", "--retry-wait=3"]
             }
             # Show progress message since aria2 doesn't trigger yt-dlp progress hooks
-            self.edit_text("⚡ הקישור נקלט! מוריד במהירות גבוהה...")
+            self.edit_text("⚡ **מוריד במהירות גבוהה...**\n\n🚀 הורדה מהירה עם 16 חיבורים מקבילים\n⏳ נא להמתין - ההעלאה תתחיל בסיום")
         else:
             if is_youtube(self._url):
                 logging.info("[DOWNLOAD METHOD: yt-dlp] Using built-in downloader (YouTube fragmented stream)")
@@ -448,10 +448,20 @@ class YoutubeDownload(BaseDownloader):
                         if title:
                             self._video_title = title[:500]
                             logging.info("Extracted title (%d chars): %s", len(title), title[:100] if len(title) > 100 else title)
-                # Get files but exclude .part files (incomplete downloads)
-                files = [f for f in Path(self._tempdir.name).glob("*") if not f.suffix.lower() == '.part']
-                if files:  # Only break if we actually got complete files
+                # Get media files only - exclude .part files, thumbnails, and subtitle files
+                # Thumbnails (.jpg, .webp) should not count as successful downloads
+                video_extensions = {'.mp4', '.mkv', '.webm', '.avi', '.mov', '.flv', '.m4v'}
+                audio_extensions = {'.mp3', '.m4a', '.aac', '.ogg', '.opus', '.wav', '.flac'}
+                media_extensions = video_extensions | audio_extensions
+                
+                all_files = [f for f in Path(self._tempdir.name).glob("*") if not f.suffix.lower() == '.part']
+                files = [f for f in all_files if f.suffix.lower() in media_extensions]
+                
+                if files:  # Only break if we got actual video/audio files
                     break
+                elif all_files:
+                    # We have files but no media - probably just thumbnails from a failed download
+                    logging.warning("Found files but no media: %s (likely download failed)", [f.name for f in all_files])
             except Exception as e:
                 last_error = str(e)
                 # Check if this is a cancellation - don't try next format, just stop
